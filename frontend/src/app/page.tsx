@@ -11,14 +11,17 @@ import {
   pollUntilDone,
   getJobResults,
 } from "@/lib/api";
-import { Loader2, AlertCircle, SearchX } from "lucide-react";
+import { DEMO_LISTINGS } from "@/lib/demo-data";
+import { Loader2, AlertCircle, SearchX, FlaskConical } from "lucide-react";
+
+const IS_DEMO = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
 
 type AppState = "idle" | "searching" | "done" | "error";
 
 export default function HomePage() {
-  const [state, setState] = useState<AppState>("idle");
+  const [state, setState] = useState<AppState>(IS_DEMO ? "done" : "idle");
   const [job, setJob] = useState<SearchJob | null>(null);
-  const [listings, setListings] = useState<Listing[]>([]);
+  const [listings, setListings] = useState<Listing[]>(IS_DEMO ? DEMO_LISTINGS : []);
   const [error, setError] = useState<string | null>(null);
 
   // Sort & filter state
@@ -32,6 +35,14 @@ export default function HomePage() {
     setJob(null);
 
     try {
+      if (IS_DEMO) {
+        // Demo mode: skip the backend, show seed data after a fake delay
+        await new Promise((r) => setTimeout(r, 1500));
+        setListings(DEMO_LISTINGS);
+        setState("done");
+        return;
+      }
+
       const newJob = await submitSearch(criteria);
       setJob(newJob);
 
@@ -75,6 +86,12 @@ export default function HomePage() {
         <p className="text-gray-500 text-sm">
           We search Suumo, Homes, and Chintai simultaneously and aggregate the results.
         </p>
+        {IS_DEMO && (
+          <div className="mt-3 inline-flex items-center gap-2 bg-amber-50 border border-amber-200 text-amber-800 text-xs font-medium px-3 py-1.5 rounded-full">
+            <FlaskConical size={13} />
+            Demo mode — showing 5 confirmed listings from April 2026 research. Run with Docker for live scraping.
+          </div>
+        )}
       </div>
 
       <SearchForm onSubmit={handleSearch} loading={state === "searching"} />
