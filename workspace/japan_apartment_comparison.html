@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tokyo Apartment Comparison — April 2026</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 14px;
+    background: #f8f9fa;
+    color: #1a1a2e;
+    padding: 2rem;
+  }
+
+  h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: .25rem; }
+  .subtitle { color: #666; font-size: .9rem; margin-bottom: 1.5rem; }
+
+  .criteria {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    margin-bottom: 1.75rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: .5rem 2rem;
+  }
+  .criteria-item { display: flex; gap: .5rem; font-size: .85rem; }
+  .criteria-label { color: #64748b; white-space: nowrap; }
+  .criteria-value { font-weight: 600; }
+
+  .table-wrap { overflow-x: auto; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fff;
+  }
+
+  thead th {
+    background: #1e293b;
+    color: #f1f5f9;
+    text-align: left;
+    padding: .75rem 1rem;
+    font-size: .78rem;
+    font-weight: 600;
+    letter-spacing: .03em;
+    white-space: nowrap;
+  }
+
+  tbody tr { border-bottom: 1px solid #f1f5f9; transition: background .15s; }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: #f8faff; }
+
+  td { padding: .8rem 1rem; vertical-align: top; font-size: .85rem; }
+
+  .prop-name { font-weight: 700; font-size: .9rem; }
+  .prop-area { color: #64748b; font-size: .78rem; margin-top: .1rem; }
+
+  .rent { font-weight: 700; font-size: 1rem; color: #0f172a; }
+  .mgmt { font-size: .78rem; color: #64748b; }
+
+  .badge {
+    display: inline-block;
+    padding: .15rem .5rem;
+    border-radius: 99px;
+    font-size: .72rem;
+    font-weight: 600;
+    margin-top: .3rem;
+  }
+  .badge-green  { background: #dcfce7; color: #166534; }
+  .badge-red    { background: #fee2e2; color: #991b1b; }
+  .badge-yellow { background: #fef9c3; color: #854d0e; }
+  .badge-blue   { background: #dbeafe; color: #1e40af; }
+  .badge-gray   { background: #f1f5f9; color: #475569; }
+
+  .cost-total { font-weight: 700; }
+  .cost-breakdown { font-size: .75rem; color: #64748b; margin-top: .2rem; line-height: 1.5; }
+
+  .note { font-size: .8rem; color: #374151; line-height: 1.5; }
+  .warn { color: #b45309; font-weight: 600; }
+
+  a { color: #2563eb; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  tfoot td {
+    background: #f8faff;
+    font-size: .78rem;
+    color: #64748b;
+    padding: .75rem 1rem;
+  }
+
+  .shinkansen {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 1.25rem 1.5rem;
+    margin-top: 1.75rem;
+  }
+  .shinkansen h2 { font-size: 1rem; font-weight: 700; margin-bottom: .75rem; }
+  .shinkansen table th { background: #334155; }
+  .shinkansen table { box-shadow: none; }
+
+  .legend { margin-top: 1rem; font-size: .78rem; color: #64748b; display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: .4rem; }
+
+  @media print {
+    body { background: #fff; padding: 0; }
+    .table-wrap { box-shadow: none; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Tokyo Apartment Search — Comparison Table</h1>
+<p class="subtitle">Search conducted April 2026 · Source: LIFULL HOME'S (homes.co.jp) · Move-in target: early July 2026</p>
+
+<!-- Search Criteria Summary -->
+<div class="criteria">
+  <div class="criteria-item"><span class="criteria-label">Budget</span><span class="criteria-value">¥100,000–¥120,000/mo</span></div>
+  <div class="criteria-item"><span class="criteria-label">Layout</span><span class="criteria-value">1LDK or 1DK</span></div>
+  <div class="criteria-item"><span class="criteria-label">Size</span><span class="criteria-value">25–30 m² preferred (≤40 m² OK)</span></div>
+  <div class="criteria-item"><span class="criteria-label">Walk to station</span><span class="criteria-value">≤ 10 minutes</span></div>
+  <div class="criteria-item"><span class="criteria-label">Commute to Shinjuku</span><span class="criteria-value">≤ 40 minutes</span></div>
+  <div class="criteria-item"><span class="criteria-label">Tokyo Station access</span><span class="criteria-value">Important (Shinkansen north)</span></div>
+  <div class="criteria-item"><span class="criteria-label">Earthquake standard</span><span class="criteria-value">Prefer post-1981 (新耐震基準)</span></div>
+  <div class="criteria-item"><span class="criteria-label">Occupants</span><span class="criteria-value">2 people</span></div>
+</div>
+
+<!-- Main comparison table -->
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>Property + Area</th>
+      <th>Monthly Rent</th>
+      <th>Layout</th>
+      <th>Size</th>
+      <th>Station + Line</th>
+      <th>Walk</th>
+      <th>→ Shinjuku</th>
+      <th>→ Tokyo Stn</th>
+      <th>Est. Initial Cost</th>
+      <th>Foreigner OK</th>
+      <th>Notes</th>
+    </tr>
+  </thead>
+  <tbody>
+
+    <!-- 1. プラムガーデン -->
+    <tr>
+      <td>1</td>
+      <td>
+        <div class="prop-name"><a href="https://www.homes.co.jp/chintai/room/ea5b82044b28d7e4f6f95930e49a0b716ae9bf60/" target="_blank">プラムガーデン</a></div>
+        <div class="prop-area">Suginami-ku / 新高円寺</div>
+      </td>
+      <td>
+        <div class="rent">¥100,000</div>
+        <div class="mgmt">+ ¥3,000 mgmt</div>
+        <div class="mgmt">= ¥103,000 total</div>
+      </td>
+      <td>1LDK</td>
+      <td>30 m²</td>
+      <td>新高円寺<br><span style="color:#64748b;font-size:.78rem">Tokyo Metro Marunouchi</span></td>
+      <td>5 min</td>
+      <td>~14 min<br><span style="font-size:.75rem;color:#64748b">Marunouchi → Shinjuku direct</span></td>
+      <td>~30 min<br><span style="font-size:.75rem;color:#64748b">Marunouchi → Tokyo direct</span></td>
+      <td>
+        <div class="cost-total">~¥410,000</div>
+        <div class="cost-breakdown">
+          Deposit: ¥100,000 (1mo)<br>
+          Key money: ¥100,000 (1mo)<br>
+          Agency fee: ¥110,000<br>
+          Misc: ¥100,000
+        </div>
+      </td>
+      <td><span class="badge badge-gray">Not stated</span></td>
+      <td class="note">
+        <span class="badge badge-green">新耐震 ✓</span><br>
+        Best value on Marunouchi line. Single line to both Shinjuku and Tokyo Stn with zero transfers — strongest transport position of all listings.
+      </td>
+    </tr>
+
+    <!-- 2. 三井マンション -->
+    <tr>
+      <td>2</td>
+      <td>
+        <div class="prop-name"><a href="https://www.homes.co.jp/chintai/room/1658ec076eb2f71203bdac0ffaa71ccfa7375e67/" target="_blank">三井マンション</a></div>
+        <div class="prop-area">Suginami-ku / 新高円寺</div>
+      </td>
+      <td>
+        <div class="rent">¥92,000</div>
+        <div class="mgmt">+ ¥0 mgmt</div>
+        <div class="mgmt">= ¥92,000 total</div>
+      </td>
+      <td>1LDK</td>
+      <td>33 m²</td>
+      <td>新高円寺<br><span style="color:#64748b;font-size:.78rem">Tokyo Metro Marunouchi</span></td>
+      <td>9 min</td>
+      <td>~14 min<br><span style="font-size:.75rem;color:#64748b">Marunouchi → Shinjuku direct</span></td>
+      <td>~30 min<br><span style="font-size:.75rem;color:#64748b">Marunouchi → Tokyo direct</span></td>
+      <td>
+        <div class="cost-total">~¥248,000</div>
+        <div class="cost-breakdown">
+          Deposit: ¥92,000 (1mo)<br>
+          Key money: ¥0<br>
+          Agency fee: ¥101,200<br>
+          Misc: ¥55,000 (est.)
+        </div>
+      </td>
+      <td><span class="badge badge-gray">Not stated</span></td>
+      <td class="note">
+        <span class="badge badge-red">旧耐震 ⚠️</span><br>
+        <span class="warn">Pre-1981 building.</span> Cheapest monthly cost and lowest initial outlay of all listings, but older construction. Largest unit (33 m²) at this station. No management fee is unusual — confirm with agent.
+      </td>
+    </tr>
+
+    <!-- 3. エクセレンスハイツ -->
+    <tr>
+      <td>3</td>
+      <td>
+        <div class="prop-name"><a href="https://www.homes.co.jp/chintai/b-31035960093672/" target="_blank">エクセレンスハイツ</a></div>
+        <div class="prop-area">Suginami-ku / 高円寺</div>
+      </td>
+      <td>
+        <div class="rent">¥94,000</div>
+        <div class="mgmt">+ ¥1,000 mgmt</div>
+        <div class="mgmt">= ¥95,000 total</div>
+      </td>
+      <td>1LDK</td>
+      <td>30 m²</td>
+      <td>高円寺<br><span style="color:#64748b;font-size:.78rem">JR Chuo/Sobu Line</span></td>
+      <td>10 min</td>
+      <td>~9 min<br><span style="font-size:.75rem;color:#64748b">JR Chuo Rapid → Shinjuku</span></td>
+      <td>~22 min<br><span style="font-size:.75rem;color:#64748b">JR Chuo Rapid → Tokyo Stn</span></td>
+      <td>
+        <div class="cost-total">~¥390,000</div>
+        <div class="cost-breakdown">
+          Deposit: ¥94,000 (1mo)<br>
+          Key money: ¥94,000 (1mo)<br>
+          Agency fee: ¥103,400<br>
+          Misc: ¥100,000
+        </div>
+      </td>
+      <td><span class="badge badge-gray">Not stated</span></td>
+      <td class="note">
+        <span class="badge badge-green">新耐震 ✓</span><br>
+        Fastest Shinjuku commute (~9 min on JR Rapid). JR is faster to Shinjuku than Marunouchi but slightly slower to Tokyo Stn. Koenji is a lively residential area with independent shops. Max walk (10 min) — verify exact address.
+      </td>
+    </tr>
+
+    <!-- 4. 東交ビル -->
+    <tr>
+      <td>4</td>
+      <td>
+        <div class="prop-name"><a href="https://www.homes.co.jp/chintai/b-1092810076883/" target="_blank">東交ビル</a></div>
+        <div class="prop-area">Suginami-ku / 新高円寺</div>
+      </td>
+      <td>
+        <div class="rent">¥112,000</div>
+        <div class="mgmt">+ ¥3,000 mgmt</div>
+        <div class="mgmt">= ¥115,000 total</div>
+      </td>
+      <td>1LDK</td>
+      <td>48 m²</td>
+      <td>新高円寺<br><span style="color:#64748b;font-size:.78rem">Tokyo Metro Marunouchi</span></td>
+      <td>3 min</td>
+      <td>~14 min<br><span style="font-size:.75rem;color:#64748b">Marunouchi → Shinjuku direct</span></td>
+      <td>~30 min<br><span style="font-size:.75rem;color:#64748b">Marunouchi → Tokyo direct</span></td>
+      <td>
+        <div class="cost-total">~¥450,000</div>
+        <div class="cost-breakdown">
+          Deposit: ¥112,000 (1mo, est.)<br>
+          Key money: ¥112,000 (1mo, est.)<br>
+          Agency fee: ¥123,200<br>
+          Misc: ¥100,000
+        </div>
+      </td>
+      <td><span class="badge badge-gray">Not stated</span></td>
+      <td class="note">
+        <span class="badge badge-red">旧耐震 ⚠️</span><br>
+        <span class="warn">Pre-1981 building.</span> By far the most space (48 m²) and closest to station (3 min). Near the budget ceiling. Older construction is the main drawback. Deposit/key money not confirmed — verify with agent.
+      </td>
+    </tr>
+
+    <!-- 5. B・キャッスル十条 -->
+    <tr>
+      <td>5</td>
+      <td>
+        <div class="prop-name"><a href="https://www.homes.co.jp/chintai/room/b953dff2d373750fd31689dfcbfcb9bbe78e2d3d/" target="_blank">B・キャッスル十条</a></div>
+        <div class="prop-area">Kita-ku / 東十条 + 十条</div>
+      </td>
+      <td>
+        <div class="rent">~¥105,000 *</div>
+        <div class="mgmt">+ ¥4,000 mgmt</div>
+        <div class="mgmt">= ~¥109,000 total</div>
+      </td>
+      <td>1LDK</td>
+      <td>52 m²</td>
+      <td>東十条 (JR Keihin-Tohoku)<br>十条 (Saikyo Line)<br><span style="color:#64748b;font-size:.78rem">Dual station access</span></td>
+      <td>6–7 min</td>
+      <td>~15 min<br><span style="font-size:.75rem;color:#64748b">JR → Akabane → Saikyo → Shinjuku</span></td>
+      <td>~22 min<br><span style="font-size:.75rem;color:#64748b">Keihin-Tohoku → Tokyo direct</span></td>
+      <td>
+        <div class="cost-total">~¥426,000 *</div>
+        <div class="cost-breakdown">
+          Deposit: ¥105,000 (1mo, est.)<br>
+          Key money: ¥105,000 (1mo, est.)<br>
+          Agency fee: ¥115,500<br>
+          Misc: ¥100,000
+        </div>
+      </td>
+      <td><span class="badge badge-gray">Not stated</span></td>
+      <td class="note">
+        <span class="badge badge-green">新耐震 ✓</span>
+        <span class="badge badge-yellow">築14年</span><br>
+        <span class="warn">* Rent not confirmed from search results — verify on homes.co.jp.</span><br>
+        Largest unit (52 m²), newest building (built ~2012), dual-station. Better Tokyo Stn access (22 min via Keihin-Tohoku). Kita-ku is a quieter residential ward — budget supermarkets plentiful.
+      </td>
+    </tr>
+
+  </tbody>
+  <tfoot>
+    <tr>
+      <td colspan="12">
+        * = estimated, not confirmed from listing. Verify all figures directly on homes.co.jp before contacting agents.<br>
+        Initial cost formula: deposit + key money + agency fee (1 month × 1.1 tax) + ¥100,000 misc (lock change, fire insurance, guarantor fee).<br>
+        Data sourced April 2026. Listings may have changed or expired.
+      </td>
+    </tr>
+  </tfoot>
+</table>
+</div>
+
+<div class="legend">
+  <div class="legend-item"><span class="badge badge-green">新耐震 ✓</span> Post-1981 earthquake standard (current code)</div>
+  <div class="legend-item"><span class="badge badge-red">旧耐震 ⚠️</span> Pre-1981 — higher seismic risk, flag to landlord</div>
+  <div class="legend-item"><span class="badge badge-yellow">築X年</span> Building age in years</div>
+</div>
+
+<!-- Shinkansen reference -->
+<div class="shinkansen">
+  <h2>Shinkansen Connectivity from Tokyo Station</h2>
+  <div class="table-wrap" style="margin-top:.75rem">
+  <table>
+    <thead>
+      <tr>
+        <th>Destination</th>
+        <th>Line</th>
+        <th>Est. Travel Time</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Gala Yuzawa</td><td>Joetsu Shinkansen</td><td>~75 min</td><td>Ski resort — seasonal direct service in winter</td></tr>
+      <tr><td>Zao Onsen</td><td>Tohoku Shinkansen → Shiroishi-Zao</td><td>~100 min</td><td>+ bus ~40 min from station to resort</td></tr>
+      <tr><td>Appi Kogen</td><td>Tohoku Shinkansen → Hanamaki</td><td>~2.5 hrs</td><td>+ bus from Hanamaki station</td></tr>
+      <tr><td>Hakkoda (backcountry)</td><td>Tohoku Shinkansen → Shin-Aomori</td><td>~3.5–4 hrs</td><td>+ Aomori City bus</td></tr>
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<p style="margin-top:1.5rem;font-size:.75rem;color:#94a3b8">
+  Generated by Tokyo Apartment Search app · Branch: claude/apartment-search-tokyo-Qm6m6
+</p>
+
+</body>
+</html>

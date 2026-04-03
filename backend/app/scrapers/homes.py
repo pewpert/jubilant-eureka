@@ -7,14 +7,31 @@ Homes is Japan's second-largest portal. Characteristics:
   - Anti-bot: relatively light — UA check + occasional CAPTCHA on rapid
     repeated access. Our delays + UA rotation handle this.
   - Listings are in <div class="mod-mergeBuilding--rent"> blocks.
+  - IMPORTANT: ?sort=fee does NOT work — sorting is JavaScript-driven.
+    Read listings in default order and sort client-side.
 
-URL structure:
-  https://www.homes.co.jp/chintai/tokyo/{ward}/list/?
-    ?pricemax={万円}
-    &pricemin={万円}
-    &floorspace={m²}
-    &buildingarea=走10分 ...  ← station walk
-    &page=2
+Correct URL pattern (verified against live site, April 2026):
+  Station-based:
+    https://www.homes.co.jp/chintai/theme/14130/tokyo/{STATION_CODE}-st/list/
+      ?cb=10.0    ← min rent in 万円 (10.0 = ¥100,000)
+      &ct=12.0    ← max rent in 万円
+      &mb=25      ← min size m²
+      &mt=40      ← max size m²
+      &et=10      ← max walk to station (minutes)
+      &page=2
+
+  Ward-based (fallback when station code unknown):
+    https://www.homes.co.jp/chintai/theme/14130/tokyo/{ward-slug}-city/list/
+      ?cb=10.0&ct=12.0&mb=25&mt=40&et=10
+
+  theme/14130 = 1LDK feature filter. Without this the results include
+  all room types and the cb/ct params behave differently.
+
+Known station codes (from manual research):
+  nakano_00758-st     → 中野 (JR Chuo / Tozai)
+  asagaya_00760-st    → 阿佐ヶ谷 (JR Chuo/Sobu)
+  新高円寺/高円寺      → use suginami-city ward search
+  十条/東十条          → use kita-city ward search
 """
 
 import re
@@ -24,28 +41,47 @@ from playwright.async_api import Page
 from bs4 import BeautifulSoup
 
 from app.scrapers.base import BaseScraper
-from app.models.search import SearchCriteria, FloorPlan, TOKYO_WARDS
+from app.models.search import SearchCriteria, FloorPlan
 
 logger = logging.getLogger(__name__)
 
 HOMES_BASE = "https://www.homes.co.jp/chintai"
 
-# Homes uses ward name in the URL path (romaji)
-WARD_SLUGS = {v: k for k, v in TOKYO_WARDS.items()}  # code → slug
+# theme/14130 is the 1LDK filter on homes.co.jp
+# Using it narrows results to the correct room type and makes cb/ct work correctly.
+HOMES_THEME_1LDK = "14130"
 
-# Homes floor plan query values
-FLOOR_PLAN_VALUES = {
-    FloorPlan.R1: "01",
-    FloorPlan.K1: "02",
-    FloorPlan.DK1: "03",
-    FloorPlan.LDK1: "04",
-    FloorPlan.K2: "05",
-    FloorPlan.DK2: "06",
-    FloorPlan.LDK2: "07",
-    FloorPlan.K3: "08",
-    FloorPlan.DK3: "09",
-    FloorPlan.LDK3: "10",
-    FloorPlan.LDK4_PLUS: "11",
+# Ward slug → homes.co.jp city path segment (verified)
+WARD_TO_CITY_SLUG: dict[str, str] = {
+    "chiyoda": "chiyoda-city",
+    "chuo": "chuo-city",
+    "minato": "minato-city",
+    "shinjuku": "shinjuku-city",
+    "bunkyo": "bunkyo-city",
+    "taito": "taito-city",
+    "sumida": "sumida-city",
+    "koto": "koto-city",
+    "shinagawa": "shinagawa-city",
+    "meguro": "meguro-city",
+    "ota": "ota-city",
+    "setagaya": "setagaya-city",
+    "shibuya": "shibuya-city",
+    "nakano": "nakano-city",
+    "suginami": "suginami-city",
+    "toshima": "toshima-city",
+    "kita": "kita-city",
+    "arakawa": "arakawa-city",
+    "itabashi": "itabashi-city",
+    "nerima": "nerima-city",
+    "adachi": "adachi-city",
+    "katsushika": "katsushika-city",
+    "edogawa": "edogawa-city",
+}
+
+# Known station codes verified against homes.co.jp
+KNOWN_STATION_CODES: dict[str, str] = {
+    "nakano": "nakano_00758",
+    "asagaya": "asagaya_00760",
 }
 
 
@@ -80,35 +116,61 @@ class HomesScraper(BaseScraper):
     source_name = "homes"
 
     def build_search_url(self, page_num: int = 1) -> str:
+        """
+        Build the correct homes.co.jp URL using the theme/14130 pattern.
+
+        Priority:
+          1. If a station name matches a known code → station-based URL
+          2. If wards are selected → first ward city-based URL
+          3. Fallback → all Tokyo (no geo filter)
+
+        The theme/14130 segment filters for 1LDK and makes cb/ct work correctly.
+        """
         c = self.criteria
 
-        # Use first selected ward or default to 'tokyo'
-        if c.wards:
+        # Determine geo path segment
+        station_code = None
+        if c.station:
+            # Try to match station name to a known code
+            for name, code in KNOWN_STATION_CODES.items():
+                if name.lower() in c.station.lower():
+                    station_code = code
+                    break
+
+        if station_code:
+            geo = f"{station_code}-st"
+        elif c.wards:
             ward_slug = c.wards[0]
-            path = f"/tokyo/{ward_slug}"
+            geo = WARD_TO_CITY_SLUG.get(ward_slug, f"{ward_slug}-city")
         else:
-            path = "/tokyo"
+            geo = "tokyo"  # broad search
 
+        # Use theme/14130 when searching for 1LDK (most common base case)
+        # If no floor plan filter or 1LDK is included, use the theme URL.
+        use_theme = not c.floor_plans or FloorPlan.LDK1 in c.floor_plans or FloorPlan.DK1 in c.floor_plans
+        if use_theme:
+            path = f"/theme/{HOMES_THEME_1LDK}/tokyo/{geo}/list/"
+        else:
+            path = f"/tokyo/{geo}/list/"
+
+        # Query params — cb/ct are in 万円, which is what homes.co.jp expects
         params: list[tuple[str, str]] = []
-
         if c.rent_min > 0:
-            params.append(("pricemin", str(int(c.rent_min))))
+            params.append(("cb", str(c.rent_min)))
         if c.rent_max < 9999:
-            params.append(("pricemax", str(int(c.rent_max))))
+            params.append(("ct", str(c.rent_max)))
         if c.size_min_m2 > 0:
-            params.append(("floorspacemin", str(int(c.size_min_m2))))
+            params.append(("mb", str(int(c.size_min_m2))))
+        if c.size_max_m2 < 9999:
+            params.append(("mt", str(int(c.size_max_m2))))
         if c.walk_minutes.value < 9999:
-            params.append(("tsukin", str(c.walk_minutes.value)))
-        if c.building_age_max < 9999:
-            params.append(("newlybuilt", str(c.building_age_max)))
-        if c.floor_plans:
-            for fp in c.floor_plans:
-                params.append(("madori", FLOOR_PLAN_VALUES[fp]))
+            params.append(("et", str(c.walk_minutes.value)))
+        # Note: building age filter is not a simple param on homes — omit for now
         if page_num > 1:
             params.append(("page", str(page_num)))
 
         qs = "&".join(f"{k}={v}" for k, v in params)
-        base = f"{HOMES_BASE}{path}/list/"
+        base = f"{HOMES_BASE}{path}"
         return f"{base}?{qs}" if qs else base
 
     async def parse_listings_page(self, page: Page) -> list[dict]:
