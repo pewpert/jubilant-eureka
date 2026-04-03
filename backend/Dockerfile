@@ -15,8 +15,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Playwright browsers are installed at runtime in docker-compose
-# so the worker container gets the right path
+# Install Chromium at build time — system libs above satisfy all dependencies
+RUN playwright install chromium
 
 COPY . .
 

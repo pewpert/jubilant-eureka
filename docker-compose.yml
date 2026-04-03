@@ -66,10 +66,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
-    # Install Playwright browsers on first run
-    command: >
-      sh -c "playwright install chromium --with-deps &&
-             celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2"
+    command: celery -A app.tasks.celery_app worker --loglevel=info --concurrency=2
 
   frontend:
     build:
