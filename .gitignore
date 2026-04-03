@@ -1,0 +1,21 @@
+# Environment — never commit secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+# Node
+node_modules/
+.next/
+
+# Docker volumes / local data
+postgres_data/
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
