@@ -14,7 +14,8 @@ import {
 import { DEMO_LISTINGS } from "@/lib/demo-data";
 import { Loader2, AlertCircle, SearchX, FlaskConical } from "lucide-react";
 
-const IS_DEMO = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+// Demo mode is ON by default — set NEXT_PUBLIC_DEMO_MODE=false to use the live backend
+const IS_DEMO = process.env.NEXT_PUBLIC_DEMO_MODE !== "false";
 
 type AppState = "idle" | "searching" | "done" | "error";
 
