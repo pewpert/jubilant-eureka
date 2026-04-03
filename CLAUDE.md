@@ -169,5 +169,41 @@ Misc covers: lock replacement, fire insurance, guarantor company fee.
 - Stack: FastAPI + Celery + Redis + Postgres + Next.js 14
 - Run: `cp .env.example .env && docker compose up --build`
 - API docs: http://localhost:8000/docs
-- Frontend: http://localhost:3000
+- Frontend (live mode): `cd frontend && NEXT_PUBLIC_API_URL=http://localhost:8000 NEXT_PUBLIC_DEMO_MODE=false npm run dev`
+- Frontend (demo mode): `cd frontend && npm run dev`
+- Seed DB: `docker compose exec backend python seed_listings.py`
 - To add Firecrawl later: set `FIRECRAWL_API_KEY` in `.env`
+
+---
+
+## Current Status (April 3 2026)
+
+### What works
+- Full Docker stack runs locally on Mac (Postgres, Redis, FastAPI, Celery worker, Playwright)
+- Frontend ↔ backend connection confirmed working (CORS fixed for ports 3000–3002)
+- Search submits a job and polls for results correctly
+- Vercel frontend deployed at: `jubilant-eureka-rho.vercel.app` (demo mode)
+- Demo mode shows 5 confirmed seed listings without needing backend
+
+### What needs fixing next session
+1. **Scrapers return zero results** — the pipeline runs end-to-end but Playwright
+   scrapers are not extracting listings. Likely causes:
+   - CSS selectors don't match current site HTML (sites change markup frequently)
+   - Sites detecting Playwright and serving empty/blocked pages
+   - Next step: run a scrape with `headless=False` locally to watch the browser,
+     inspect what HTML is actually returned, update selectors to match
+2. **Vercel production deployment** — needs `rootDirectory=frontend` set in
+   Vercel dashboard (Settings → General → Root Directory) then redeploy
+3. **Cloud backend** — currently backend only runs locally via Docker.
+   Railway (~$5/mo) is the recommended next step for a fully public deployment.
+
+### How to debug zero results
+```bash
+# Check what the scraper is actually hitting
+docker compose logs worker --tail=50
+
+# Or hit the API directly to trigger a scrape and watch logs live
+curl -X POST http://localhost:8000/api/search/ \
+  -H "Content-Type: application/json" \
+  -d '{"wards":["suginami"],"rent_min":10,"rent_max":12,"floor_plans":["1LDK"],"walk_minutes":10,"sources":["homes"],"max_pages":1}'
+```
