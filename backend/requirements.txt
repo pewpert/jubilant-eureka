@@ -4,7 +4,8 @@ uvicorn[standard]==0.30.6
 
 # Database
 sqlalchemy[asyncio]==2.0.35
-asyncpg==0.29.0
+asyncpg==0.29.0          # async driver (FastAPI)
+psycopg2-binary==2.9.9   # sync driver (Celery worker)
 alembic==1.13.2
 
 # Validation
