@@ -1,7 +1,18 @@
-# Tokyo Apartment Search — Project Context
+# Tokyo Apartment Search — Agent Context
 
-This file provides Claude with context for continuing or repeating this apartment search project.
-It also serves as the **base case test scenario** for new users evaluating the application.
+**For new Claude Code sessions: read this file first, then `README.md`.**
+
+This file is the authoritative source of truth for project state, decisions made, and what to do next.
+It also doubles as the base case test scenario for the application.
+
+## Maintaining this file
+- Update the **Current Status** section at the end of every coding session.
+- When a "needs fixing" item is resolved, move it to "What works" and note the date.
+- When adding new scripts, commands, or files, add them to the relevant section here AND to `README.md`.
+- Keep `README.md` in sync for structural changes (new files, commands, env vars).
+- Do not let either file go stale — stale docs cause the next agent to repeat work already done.
+
+---
 
 ---
 
@@ -176,34 +187,65 @@ Misc covers: lock replacement, fire insurance, guarantor company fee.
 
 ---
 
-## Current Status (April 3 2026)
+## Current Status (April 4 2026)
 
 ### What works
 - Full Docker stack runs locally on Mac (Postgres, Redis, FastAPI, Celery worker, Playwright)
+- Playwright/Chromium installed at Docker build time (not downloaded at startup)
 - Frontend ↔ backend connection confirmed working (CORS fixed for ports 3000–3002)
 - Search submits a job and polls for results correctly
 - Vercel frontend deployed at: `jubilant-eureka-rho.vercel.app` (demo mode)
 - Demo mode shows 5 confirmed seed listings without needing backend
+- HTML debug snapshots saved to `/tmp/debug_{source}_p{n}.html` on each scrape run
 
-### What needs fixing next session
-1. **Scrapers return zero results** — the pipeline runs end-to-end but Playwright
-   scrapers are not extracting listings. Likely causes:
-   - CSS selectors don't match current site HTML (sites change markup frequently)
-   - Sites detecting Playwright and serving empty/blocked pages
-   - Next step: run a scrape with `headless=False` locally to watch the browser,
-     inspect what HTML is actually returned, update selectors to match
-2. **Vercel production deployment** — needs `rootDirectory=frontend` set in
-   Vercel dashboard (Settings → General → Root Directory) then redeploy
-3. **Cloud backend** — currently backend only runs locally via Docker.
-   Railway (~$5/mo) is the recommended next step for a fully public deployment.
+### What needs fixing (priority order)
+1. **Scrapers return zero results** — the pipeline runs end-to-end but no listings are extracted.
+   Root cause not yet confirmed; two likely candidates:
+   - **CSS selectors are stale** — homes.co.jp changes markup. The selectors were updated
+     (April 4) with 7 fallback strategies + attribute wildcards, but haven't been verified
+     against live HTML yet.
+   - **Sites blocking Playwright** — getting a CAPTCHA/empty page instead of listings.
+   **Immediate next step:** run `test_scraper.py` (see Debug section below) and paste output.
 
-### How to debug zero results
+2. **Vercel Root Directory** — in the Vercel dashboard go to
+   Settings → General → Root Directory → set to `frontend` → Save → Redeploy.
+   (Without this, Vercel tries to build from repo root and fails.)
+
+3. **Cloud backend** — backend only runs locally. Railway.app (~$5/mo) is the recommended
+   next step for a fully public deployment.
+
+### Debug workflow for zero results
+
 ```bash
-# Check what the scraper is actually hitting
-docker compose logs worker --tail=50
+# Step 1 — pull latest code and restart
+cd ~/Desktop/jubilant-eureka
+git pull
+docker compose down && docker compose up --build -d
 
-# Or hit the API directly to trigger a scrape and watch logs live
+# Step 2 — run standalone scraper test (bypasses Celery entirely)
+docker compose exec worker python test_scraper.py
+
+# If it prints listings → scraper works, Celery connection is the issue
+# If it prints "No listing selector matched" + class list → paste that output,
+#   update selectors in backend/app/scrapers/homes.py to match
+
+# Step 3 — inspect raw HTML if needed
+docker compose exec worker python debug_html.py
+
+# Step 4 — trigger via API and watch logs
 curl -X POST http://localhost:8000/api/search/ \
   -H "Content-Type: application/json" \
   -d '{"wards":["suginami"],"rent_min":10,"rent_max":12,"floor_plans":["1LDK"],"walk_minutes":10,"sources":["homes"],"max_pages":1}'
+
+docker compose logs worker --tail=100 -f
 ```
+
+### Files added/changed this session (April 4)
+| File | Change |
+|---|---|
+| `backend/test_scraper.py` | **New** — standalone scraper test, bypasses Celery |
+| `backend/app/scrapers/homes.py` | Expanded to 7 CSS selector strategies; logs class names on failure |
+| `backend/app/scrapers/base.py` | Added 2.5s extra wait after page load for JS hydration |
+| `docker-compose.yml` | Removed obsolete `version` attribute |
+| `README.md` | **New** — human-readable setup guide |
+| `CLAUDE.md` | Added maintenance instructions + refreshed status |
