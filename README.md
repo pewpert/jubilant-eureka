@@ -171,6 +171,43 @@ See `CLAUDE.md` for detailed current status, known issues, and next steps. That 
 
 ---
 
+## Working in VS Code — Git workflow
+
+VS Code edits your **local folder** (`~/Desktop/jubilant-eureka`). You need to pull from GitHub before starting and push after finishing to keep everything in sync.
+
+**Before you start coding:**
+```bash
+cd ~/Desktop/jubilant-eureka
+git pull origin claude/apartment-search-tokyo-Qm6m6
+```
+
+**After making changes in VS Code:**
+
+Option A — terminal:
+```bash
+git add .
+git commit -m "describe what you changed"
+git push origin claude/apartment-search-tokyo-Qm6m6
+```
+
+Option B — VS Code Source Control panel (left sidebar, branch icon):
+1. Click the `+` next to changed files to stage them
+2. Type a commit message in the box at the top
+3. Click **Commit**, then **Sync Changes** (or **Push**)
+
+**Check which branch you're on:**
+```bash
+git branch
+```
+Should show `* claude/apartment-search-tokyo-Qm6m6`. If not:
+```bash
+git checkout claude/apartment-search-tokyo-Qm6m6
+```
+
+**VS Code tip:** install the **GitLens** extension — it shows you the current branch and sync status in the status bar at the bottom of the window at all times.
+
+---
+
 ## Maintaining this README
 
 **When to update this file:**
