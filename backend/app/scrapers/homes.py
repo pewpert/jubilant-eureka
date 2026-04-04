@@ -173,19 +173,64 @@ class HomesScraper(BaseScraper):
         base = f"{HOMES_BASE}{path}"
         return f"{base}?{qs}" if qs else base
 
+    # CSS selector strategies to try in order (homes.co.jp changes markup periodically)
+    _CARD_SELECTORS = [
+        # Current layout (verified ~2024)
+        ".mod-mergeBuilding--rent",
+        # Alternate layout / older version
+        ".prg-cassette",
+        # Generic fallback — any section/article that contains a price
+        "section.cassette",
+        "article.cassette",
+        # Broader fallback
+        "[class*='cassette']",
+        "[class*='bukken']",
+        "[class*='property']",
+    ]
+
     async def parse_listings_page(self, page: Page) -> list[dict]:
+        # Wait for any known listing container — try all selectors
+        combined = ", ".join(self._CARD_SELECTORS)
         try:
-            await page.wait_for_selector(".mod-mergeBuilding--rent, .prg-cassette", timeout=15000)
+            await page.wait_for_selector(combined, timeout=20000)
         except Exception:
-            logger.warning("[homes] listing selector not found — may be blocked or no results")
+            # Page loaded but no listing cards visible — log what we actually got
+            html_preview = await page.content()
+            title = await page.title()
+            logger.warning(
+                "[homes] No listing selector matched. title=%r  html_len=%d",
+                title, len(html_preview),
+            )
+            # Log classes that exist in the page to help diagnose selector drift
+            soup_dbg = BeautifulSoup(html_preview, "lxml")
+            all_cls: set[str] = set()
+            for tag in soup_dbg.find_all(class_=True):
+                for c in tag.get("class", []):
+                    all_cls.add(c)
+            kw = ["list", "item", "card", "cassette", "property", "bukken",
+                  "building", "result", "rent", "merge", "unit", "mod-", "prg-"]
+            hits = sorted(c for c in all_cls if any(k in c.lower() for k in kw))[:30]
+            logger.warning("[homes] Classes on page that look listing-related: %s", hits)
             return []
 
         html = await page.content()
         soup = BeautifulSoup(html, "lxml")
         results = []
 
+        # Try each selector strategy until we find cards
+        cards = []
+        for sel in self._CARD_SELECTORS:
+            cards = soup.select(sel)
+            if cards:
+                logger.info("[homes] Using selector %r — found %d cards", sel, len(cards))
+                break
+
+        if not cards:
+            logger.warning("[homes] parse_listings_page: no cards found despite wait_for_selector passing")
+            return []
+
         # Homes renders each building/unit as a <section> with class mod-mergeBuilding--rent
-        for item in soup.select(".mod-mergeBuilding--rent, .prg-cassette"):
+        for item in cards:
             building_name = self._text(item, ".mod-mergeBuilding__buildingName, .bukken-name")
             address = self._text(item, ".mod-mergeBuilding__address, .bukken-address")
 
@@ -214,20 +259,28 @@ class HomesScraper(BaseScraper):
             image_tag = item.select_one("img.mod-mergeBuilding__img, img.bukken-img")
             image_url = image_tag.get("src") if image_tag else None
 
-            # Units
-            for unit in item.select(".mod-mergeUnit, .prg-unit"):
-                rent_text = self._text(unit, ".mod-mergeUnit__price, .price-rent")
-                fee_text = self._text(unit, ".mod-mergeUnit__managementFee, .price-fee")
-                deposit_text = self._text(unit, ".mod-mergeUnit__deposit, .price-shikikin")
-                key_money_text = self._text(unit, ".mod-mergeUnit__keyMoney, .price-reikin")
-                floor_plan_text = self._text(unit, ".mod-mergeUnit__floorPlan, .madori")
-                size_text = self._text(unit, ".mod-mergeUnit__floorSpace, .menseki")
-                floor_text = self._text(unit, ".mod-mergeUnit__floor, .floor")
+            # Units — nested inside the building card
+            unit_els = item.select(".mod-mergeUnit, .prg-unit, [class*='mergeUnit'], [class*='unit--']")
+            # Fallback: treat the card itself as the unit if no nested units found
+            unit_sources = unit_els if unit_els else [item]
 
-                link_el = unit.select_one("a[href]")
+            for unit in unit_sources:
+                rent_text = self._text(unit, ".mod-mergeUnit__price, .price-rent, [class*='price'], [class*='rent']")
+                fee_text = self._text(unit, ".mod-mergeUnit__managementFee, .price-fee, [class*='kanri'], [class*='fee']")
+                deposit_text = self._text(unit, ".mod-mergeUnit__deposit, .price-shikikin, [class*='shikikin'], [class*='deposit']")
+                key_money_text = self._text(unit, ".mod-mergeUnit__keyMoney, .price-reikin, [class*='reikin'], [class*='key']")
+                floor_plan_text = self._text(unit, ".mod-mergeUnit__floorPlan, .madori, [class*='madori'], [class*='floorPlan'], [class*='floor-plan']")
+                size_text = self._text(unit, ".mod-mergeUnit__floorSpace, .menseki, [class*='menseki'], [class*='floorSpace'], [class*='size']")
+                floor_text = self._text(unit, ".mod-mergeUnit__floor, .floor, [class*='floor']")
+
+                link_el = unit.select_one("a[href*='/chintai/']") or unit.select_one("a[href]")
                 detail_url = link_el["href"] if link_el else ""
                 if detail_url and not detail_url.startswith("http"):
                     detail_url = f"https://www.homes.co.jp{detail_url}"
+
+                # Skip if we can't extract any meaningful data
+                if not rent_text and not floor_plan_text:
+                    continue
 
                 floor_num = None
                 if floor_text:
@@ -261,7 +314,12 @@ class HomesScraper(BaseScraper):
         return results
 
     async def has_next_page(self, page: Page) -> bool:
-        next_btn = await page.query_selector("a:has-text('次のページ'), .pagination__next:not(.is-disabled)")
+        next_btn = await page.query_selector(
+            "a:has-text('次のページ'), "
+            ".pagination__next:not(.is-disabled), "
+            "[class*='pagination'] a:has-text('次'), "
+            "a[class*='next']:not([class*='disabled'])"
+        )
         return next_btn is not None
 
     @staticmethod

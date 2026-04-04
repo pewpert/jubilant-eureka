@@ -167,6 +167,9 @@ class BaseScraper(ABC):
     async def _goto_with_retry(self, page: Page, url: str) -> None:
         """Navigate to URL with automatic retry on transient failures."""
         await page.goto(url, wait_until="domcontentloaded")
+        # Extra pause to let JS frameworks hydrate the DOM.
+        # homes.co.jp loads listing cards asynchronously after the initial HTML.
+        await asyncio.sleep(2.5)
         await self._human_delay()
 
     # ------------------------------------------------------------------ #
