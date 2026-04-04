@@ -214,6 +214,18 @@ class BaseScraper(ABC):
                     logger.error("[%s] Failed to load page %d: %s", self.source_name, page_num, exc)
                     break
 
+                # Dump HTML for debugging — shows exactly what the site returned
+                html = await page.content()
+                title = await page.title()
+                logger.info("[%s] Page title: %s | HTML length: %d chars", self.source_name, title, len(html))
+
+                # Write HTML snapshot to /tmp for inspection
+                import os
+                debug_path = f"/tmp/debug_{self.source_name}_p{page_num}.html"
+                with open(debug_path, "w", encoding="utf-8") as f:
+                    f.write(html)
+                logger.info("[%s] HTML snapshot saved → %s", self.source_name, debug_path)
+
                 listings = await self.parse_listings_page(page)
                 logger.info("[%s] Page %d → %d listings", self.source_name, page_num, len(listings))
 
