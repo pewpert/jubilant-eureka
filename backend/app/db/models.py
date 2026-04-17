@@ -25,7 +25,9 @@ class SearchJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    progress: Mapped[str | None] = mapped_column(Text, nullable=True)
     total_results: Mapped[int] = mapped_column(Integer, default=0)
+    scrape_stats: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     listings: Mapped[list["Listing"]] = relationship(
         "Listing", back_populates="job", cascade="all, delete-orphan"
@@ -60,6 +62,7 @@ class Listing(Base):
     address: Mapped[str | None] = mapped_column(Text, nullable=True)
     ward: Mapped[str | None] = mapped_column(String(50), nullable=True)
     nearest_station: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    nearest_line: Mapped[str | None] = mapped_column(String(100), nullable=True)
     walk_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Unit details

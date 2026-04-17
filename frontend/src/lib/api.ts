@@ -27,6 +27,7 @@ export interface Listing {
   address: string | null;
   ward: string | null;
   nearest_station: string | null;
+  nearest_line: string | null;
   walk_minutes: number | null;
   floor_plan: string | null;
   size_m2: number | null;
@@ -38,6 +39,8 @@ export interface Listing {
   features: string[] | null;
   image_url: string | null;
   scraped_at: string;
+  _excluded_reason?: string;
+  _missed_filter?: string;
 }
 
 export interface SearchJob {
@@ -48,8 +51,44 @@ export interface SearchJob {
   completed_at: string | null;
   total_results: number;
   error: string | null;
+  progress: string | null;
+  scrape_stats: Record<string, unknown> | null;
   listings?: Listing[];
 }
+
+// --- Debug types ---
+
+export interface ExclusionBreakdown {
+  rent: number;
+  size: number;
+  walk: number;
+  building_age: number;
+  floor_plan: number;
+  unparseable_rent: number;
+}
+
+export interface SourceDebugStats {
+  url_used: string | null;
+  raw_count: number;
+  passed_count: number;
+  excluded_by: ExclusionBreakdown;
+  error: string | null;
+  blocked: boolean;
+  sample_excluded: Listing[];
+  sample_near_miss: Listing[];
+}
+
+export interface JobDebugInfo {
+  job_id: string;
+  status: string;
+  criteria: Record<string, unknown>;
+  per_source: Record<string, SourceDebugStats>;
+  total_raw: number;
+  total_passed: number;
+  dominant_filter: string | null;
+}
+
+// --- API functions ---
 
 export async function submitSearch(criteria: SearchCriteria): Promise<SearchJob> {
   const res = await fetch(`${API_BASE}/api/search/`, {
@@ -76,6 +115,12 @@ export async function getJobResults(jobId: string): Promise<SearchJob> {
   return res.json();
 }
 
+export async function getJobDebug(jobId: string): Promise<JobDebugInfo> {
+  const res = await fetch(`${API_BASE}/api/search/${jobId}/debug`);
+  if (!res.ok) throw new Error("Failed to fetch debug info");
+  return res.json();
+}
+
 /** Poll job status until completed or failed. Calls onUpdate on each tick. */
 export async function pollUntilDone(
   jobId: string,
@@ -99,7 +144,7 @@ export async function pollUntilDone(
   });
 }
 
-export function formatYen(yen: number | null): string {
+export function formatYen(yen: number | null | undefined): string {
   if (yen == null) return "—";
   if (yen >= 10000) return `¥${(yen / 10000).toFixed(1)}万`;
   return `¥${yen.toLocaleString()}`;

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from app.db.database import get_db
 from app.db.models import SearchJob, Listing
 from app.models.search import SearchCriteria
-from app.models.listing import SearchJobOut, SearchJobWithListings
+from app.models.listing import SearchJobOut, SearchJobWithListings, DebugResponse, SourceDebugStats, ExclusionBreakdown
 from app.tasks.scrape import scrape_apartments
 
 router = APIRouter()
@@ -72,4 +72,48 @@ async def get_job_results(
     return SearchJobWithListings(
         **SearchJobOut.model_validate(job).model_dump(),
         listings=listings,
+    )
+
+
+@router.get("/{job_id}/debug", response_model=DebugResponse)
+async def get_job_debug(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Per-source scrape diagnostics. Available once job is completed or failed.
+    Shows raw_count vs passed_count and which filters excluded listings.
+    Useful for diagnosing zero results.
+    """
+    job = await db.get(SearchJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    stats_raw: dict = job.scrape_stats or {}
+    per_source_raw: dict = stats_raw.get("per_source", {})
+
+    per_source: dict[str, SourceDebugStats] = {}
+    for source, data in per_source_raw.items():
+        excl = data.get("excluded_by", {})
+        per_source[source] = SourceDebugStats(
+            url_used=data.get("url_used"),
+            raw_count=data.get("raw_count", 0),
+            passed_count=data.get("passed_count", 0),
+            excluded_by=ExclusionBreakdown(**{
+                k: excl.get(k, 0) for k in ExclusionBreakdown.model_fields
+            }),
+            error=data.get("error"),
+            blocked=data.get("blocked", False),
+            sample_excluded=data.get("sample_excluded", []),
+            sample_near_miss=data.get("sample_near_miss", []),
+        )
+
+    return DebugResponse(
+        job_id=str(job_id),
+        status=job.status,
+        criteria=job.criteria,
+        per_source=per_source,
+        total_raw=stats_raw.get("total_raw", 0),
+        total_passed=stats_raw.get("total_passed", 0),
+        dominant_filter=stats_raw.get("dominant_filter"),
     )

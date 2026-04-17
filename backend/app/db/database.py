@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 
@@ -32,3 +33,7 @@ async def get_db():
 async def create_tables():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent column adds for existing installs (no Alembic in this project)
+        await conn.execute(text(
+            "ALTER TABLE listings ADD COLUMN IF NOT EXISTS nearest_line VARCHAR(100)"
+        ))

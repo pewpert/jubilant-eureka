@@ -73,6 +73,7 @@ services:
     env_file: .env
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_DEMO_MODE: "false"
     ports:
       - "3000:3000"
     volumes:

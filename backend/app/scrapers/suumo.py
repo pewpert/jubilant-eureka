@@ -40,6 +40,7 @@ from playwright.async_api import Page
 from bs4 import BeautifulSoup
 
 from app.scrapers.base import BaseScraper
+from app.scrapers.transport import parse_transport
 from app.models.search import SearchCriteria, FloorPlan, WalkMinutes
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,94 @@ def _parse_building_age(text: str | None) -> tuple[int | None, int | None]:
 class SuumoScraper(BaseScraper):
     source_name = "suumo"
 
+    async def scrape(self):
+        """Override to warm up with a homepage visit before hitting the search URL.
+        Uses a shared block-memory to skip the local attempt entirely if Suumo
+        has rate-limited us recently (Playwright warmup costs ~5s per request)."""
+        import asyncio as _asyncio
+        from app.scrapers.firecrawl import fetch_html, is_recently_blocked, mark_blocked
+
+        recently_blocked = await is_recently_blocked(self.source_name)
+        if recently_blocked:
+            logger.info("[suumo] Recently blocked — skipping local scrape, going straight to Firecrawl")
+
+        context = await self._new_context() if not recently_blocked else None
+        page = await self._new_page(context) if context else None
+        try:
+            if not recently_blocked:
+                logger.info("[suumo] Warming up via homepage…")
+                try:
+                    await page.goto("https://suumo.jp/chintai/tokyo/", wait_until="domcontentloaded")
+                    await _asyncio.sleep(3)
+                except Exception as exc:
+                    logger.warning("[suumo] Warmup failed (non-fatal): %s", exc)
+
+            for page_num in range(1, self.criteria.max_pages + 1):
+                url = self.build_search_url(page_num)
+
+                if recently_blocked:
+                    # Skip local attempt — go straight to Firecrawl (may be a cache hit)
+                    logger.info("[suumo] Firecrawl-only fetch page %d → %s", page_num, url)
+                    fc_html = await fetch_html(url)
+                    if fc_html and "アクセス集中に関するお詫び" not in fc_html:
+                        listings = self._parse_html(fc_html)
+                        logger.info("[suumo] Firecrawl page %d → %d listings", page_num, len(listings))
+                        for listing in listings:
+                            listing["source"] = self.source_name
+                            yield listing
+                        if not listings:
+                            break
+                        continue
+                    logger.warning("[suumo] Firecrawl also failed — aborting")
+                    self.blocked = True
+                    break
+
+                logger.info("[suumo] Scraping page %d → %s", page_num, url)
+                try:
+                    await self._goto_with_retry(page, url)
+                except Exception as exc:
+                    logger.error("[suumo] Failed to load page %d: %s", page_num, exc)
+                    break
+
+                html = await page.content()
+                title = await page.title()
+                logger.info("[suumo] Page title: %s | HTML length: %d", title, len(html))
+
+                if "アクセス集中に関するお詫び" in html or len(html) < 3000:
+                    logger.warning("[suumo] Rate-limit page detected — marking blocked + trying Firecrawl fallback")
+                    await mark_blocked(self.source_name)
+                    fc_html = await fetch_html(url)
+                    if fc_html and "アクセス集中に関するお詫び" not in fc_html:
+                        logger.info("[suumo] Firecrawl returned usable HTML — parsing")
+                        listings = self._parse_html(fc_html)
+                        logger.info("[suumo] Firecrawl page %d → %d listings", page_num, len(listings))
+                        for listing in listings:
+                            listing["source"] = self.source_name
+                            yield listing
+                        if not listings:
+                            break
+                        continue
+                    logger.warning("[suumo] Firecrawl unavailable or also blocked — marking source blocked")
+                    self.blocked = True
+                    break
+
+                import os as _os
+                with open(f"/tmp/debug_suumo_p{page_num}.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+
+                listings = await self.parse_listings_page(page)
+                logger.info("[suumo] Page %d → %d listings", page_num, len(listings))
+
+                for listing in listings:
+                    listing["source"] = self.source_name
+                    yield listing
+
+                if not listings or not await self.has_next_page(page):
+                    break
+        finally:
+            if context is not None:
+                await context.close()
+
     def build_search_url(self, page_num: int = 1) -> str:
         c = self.criteria
         params: list[tuple[str, str]] = [
@@ -140,14 +229,18 @@ class SuumoScraper(BaseScraper):
         for code in c.ward_codes():
             params.append(("sc", code))
 
-        params += [
-            ("cb", str(c.rent_min)),
-            ("ct", str(c.rent_max)),
-            ("mb", str(int(c.size_min_m2))),
-            ("mt", str(int(c.size_max_m2) if c.size_max_m2 < 9999 else 9999999)),
-            ("et", str(c.walk_minutes.value)),
-            ("cn", str(c.building_age_max if c.building_age_max < 9999 else 9999999)),
-        ]
+        if c.rent_min > 0:
+            params.append(("cb", str(c.rent_min)))
+        if c.rent_max < 9999:
+            params.append(("ct", str(c.rent_max)))
+        if c.size_min_m2 > 0:
+            params.append(("mb", str(int(c.size_min_m2))))
+        if c.size_max_m2 < 9999:
+            params.append(("mt", str(int(c.size_max_m2))))
+        if c.walk_minutes.value < 9999:
+            params.append(("et", str(c.walk_minutes.value)))
+        if c.building_age_max < 9999:
+            params.append(("cn", str(c.building_age_max)))
 
         # Room types
         if c.floor_plans:
@@ -176,6 +269,10 @@ class SuumoScraper(BaseScraper):
             return []
 
         html = await page.content()
+        return self._parse_html(html)
+
+    def _parse_html(self, html: str) -> list[dict]:
+        """Parse raw Suumo HTML (used by both Playwright path and Firecrawl fallback)."""
         soup = BeautifulSoup(html, "lxml")
         results = []
 
@@ -189,49 +286,75 @@ class SuumoScraper(BaseScraper):
             image_tag = cassette.select_one(".cassetteitem-object-img img")
             image_url = image_tag.get("rel-lazy") or image_tag.get("src") if image_tag else None
 
-            # Station info from transport block
-            station, walk = None, None
+            # Station + line + walk from transport block
+            line, station, walk = None, None, None
             transport_el = cassette.select_one(".cassetteitem-detail-col1")
             if transport_el:
-                # Walk time usually appears as 'XX分' in the transport text
-                transport_text = transport_el.get_text(" ", strip=True)
-                walk = _parse_walk(transport_text)
-                # Station name is harder — pick the part before 分
-                m = re.search(r"([^\s]+駅)\s*歩(\d+)分", transport_text)
-                if m:
-                    station = m.group(1)
-
-            # The transport block is actually in a separate element on Suumo
-            transport_block = cassette.select(".cassetteitem-detail-col1 .cassette_detail-col1")
-            if not station:
-                # Try alt selector for station
-                for li in cassette.select("li"):
+                # Each <li> is one line/station pair; take the closest one (smallest walk)
+                lis = transport_el.select("li") or [transport_el]
+                best: tuple[int, str | None, str | None] | None = None
+                for li in lis:
                     txt = li.get_text(" ", strip=True)
-                    m = re.search(r"([^\s/]+駅)\s*歩(\d+)分", txt)
-                    if m:
-                        station = m.group(1)
-                        walk = int(m.group(2))
-                        break
+                    ln, st, wk = parse_transport(txt)
+                    if wk is not None and (best is None or wk < best[0]):
+                        best = (wk, ln, st)
+                if best:
+                    walk, line, station = best
 
             age_years, built_year = _parse_building_age(age_text)
 
-            # Unit rows inside this building card
-            for row in cassette.select(".cassetteitem_other"):
+            # Unit rows. Layout varies:
+            #   Live Suumo: each .cassetteitem_other is one unit (7 td cells).
+            #   Firecrawl HTML: one .cassetteitem_other contains multiple <tr>, each a unit (9 cells).
+            # Collect candidate rows from both shapes.
+            candidate_rows: list = []
+            for other in cassette.select(".cassetteitem_other"):
+                trs = [tr for tr in other.select("tr") if tr.select("td")]
+                if trs:
+                    candidate_rows.extend(trs)
+                else:
+                    candidate_rows.append(other)
+
+            for row in candidate_rows:
                 cells = row.select("td")
                 if not cells:
                     continue
 
-                # Floor plan cell text extraction is layout-dependent; use indexes
-                floor_text = self._cell_text(cells, 0)
-                rent_text = self._cell_text(cells, 1)
-                fee_text = self._cell_text(cells, 2)
-                deposit_text = self._cell_text(cells, 3)
-                key_money_text = self._cell_text(cells, 4)
-                floor_plan_text = self._cell_text(cells, 5)
-                size_text = self._cell_text(cells, 6)
+                # Detect layout by probing cell contents. The 9-cell Firecrawl layout has
+                # '万円' in cell 3; the 7-cell live layout has '万円' in cell 1.
+                cell_texts = [c.get_text(" ", strip=True) for c in cells]
+                if len(cells) >= 9 and "万円" in cell_texts[3]:
+                    floor_text = cell_texts[2]
+                    # Cell 3: "10.7万円 8000円" → rent + fee in one cell
+                    price_text = cell_texts[3]
+                    rent_text = price_text
+                    fee_m = re.search(r"万円\s+([\d,]+\s*円)", price_text)
+                    fee_text = fee_m.group(1) if fee_m else None
+                    # Cell 4: "- 10.7万円" → deposit + key_money
+                    dep_text = cell_texts[4]
+                    dep_parts = re.findall(r"[-\d.万円,]+", dep_text)
+                    deposit_text = dep_parts[0] if dep_parts else None
+                    key_money_text = dep_parts[1] if len(dep_parts) > 1 else None
+                    # Cell 5: "1SK 32.26m²" — floor plan + size combined
+                    combo = cell_texts[5]
+                    fp_m = re.search(r"(\dR|\d[SLK]?[LDK]+|\dK)", combo)
+                    floor_plan_text = fp_m.group(1) if fp_m else None
+                    size_text = combo
+                else:
+                    floor_text = self._cell_text(cells, 0)
+                    rent_text = self._cell_text(cells, 1)
+                    fee_text = self._cell_text(cells, 2)
+                    deposit_text = self._cell_text(cells, 3)
+                    key_money_text = self._cell_text(cells, 4)
+                    floor_plan_text = self._cell_text(cells, 5)
+                    size_text = self._cell_text(cells, 6)
 
-                detail_link = row.select_one("a.js-cassette_link_href")
-                detail_url = f"https://suumo.jp{detail_link['href']}" if detail_link and detail_link.get("href") else ""
+                detail_link = row.select_one("a.js-cassette_link_href") or row.select_one("a[href*='/chintai/']")
+                if detail_link and detail_link.get("href"):
+                    href = detail_link["href"]
+                    detail_url = href if href.startswith("http") else f"https://suumo.jp{href}"
+                else:
+                    detail_url = ""
 
                 floor_num, total_floors = _parse_floor(floor_text)
 
@@ -246,6 +369,7 @@ class SuumoScraper(BaseScraper):
                     "address": address,
                     "ward": None,  # derived from ward code in manager
                     "nearest_station": station,
+                    "nearest_line": line,
                     "walk_minutes": walk,
                     "floor_plan": floor_plan_text,
                     "size_m2": _parse_size(size_text),

@@ -187,65 +187,89 @@ Misc covers: lock replacement, fire insurance, guarantor company fee.
 
 ---
 
-## Current Status (April 4 2026)
+## Current Status (April 6 2026)
 
 ### What works
 - Full Docker stack runs locally on Mac (Postgres, Redis, FastAPI, Celery worker, Playwright)
-- Playwright/Chromium installed at Docker build time (not downloaded at startup)
-- Frontend ↔ backend connection confirmed working (CORS fixed for ports 3000–3002)
-- Search submits a job and polls for results correctly
-- Vercel frontend deployed at: `jubilant-eureka-rho.vercel.app` (demo mode)
-- Demo mode shows 5 confirmed seed listings without needing backend
+- **Homes.co.jp scraper confirmed working**: 117 raw listings for Suginami + Nakano, 2 pages
+- **Chintai.net scraper confirmed working**: 112 raw listings for same criteria
+- Both scrapers iterate all selected wards and dedup by URL
+- Post-scrape filter pipeline working: rent, size, walk, building_age, floor_plan all enforced
+- Per-source scrape stats tracked through the pipeline (`scrape_stats` JSONB on `search_jobs`)
+- Debug endpoint `GET /api/search/{id}/debug` returning per-source breakdown
+- `ScrapeDebugPanel` component: collapsible, shows per-source raw/passed/excluded counts
+- Frontend redesigned: rose-700 brand, Inter font, Tokyo Rooms header, compact filter bar
+- Number input sticky-zero bug fixed (string state approach)
+- Max size field added to search form
+- Rent min > max validation with inline error
+- Ward picker collapsed into a dropdown popover
+- `backend/test_filters.py` written — 8 test cases for all filter types
 - HTML debug snapshots saved to `/tmp/debug_{source}_p{n}.html` on each scrape run
 
+### Suumo status — IP-blocked (temporary)
+Suumo returns their rate-limit page ("アクセス集中に関するお詫び", 1525 bytes) from Docker on this machine.
+This is a **temporary IP block** caused by repeated test requests during development.
+- The scraper code is correct (same structure as before, warmup visit added)
+- It will work from a fresh IP / Railway.app cloud deployment
+- Do NOT attempt to repeatedly test Suumo from Docker locally — this extends the block
+- Wait ~24h or use a VPN/proxy to test
+
 ### What needs fixing (priority order)
-1. **Scrapers return zero results** — the pipeline runs end-to-end but no listings are extracted.
-   Root cause not yet confirmed; two likely candidates:
-   - **CSS selectors are stale** — homes.co.jp changes markup. The selectors were updated
-     (April 4) with 7 fallback strategies + attribute wildcards, but haven't been verified
-     against live HTML yet.
-   - **Sites blocking Playwright** — getting a CAPTCHA/empty page instead of listings.
-   **Immediate next step:** run `test_scraper.py` (see Debug section below) and paste output.
+1. **Chintai filter mismatch** — Chintai passes 0 listings for base case (rent 10–12万, 1LDK/1DK, Suginami+Nakano). The site returns 112 raw but all excluded by rent (103) + floor_plan (6) + size (3). The URL params `yen_from/yen_to/madori` are sent but the site may not honour them strictly for all result types. Post-filter is correctly excluding them. **This means post-filter IS working but the results are overly narrow — may need to widen criteria in testing, or the filter params need verification.**
 
-2. **Vercel Root Directory** — in the Vercel dashboard go to
+2. **Duplicate listings** — base case returns same building multiple times (e.g. 東交ビル ×2, マスコットパレス ×4). The URL-based dedup works within a source but Homes returns multiple units per building as separate dict entries with the same `source_url` (detail link). Need to verify if each unit has a unique URL or if dedup logic needs a composite key.
+
+3. **Vercel Root Directory** — in the Vercel dashboard go to
    Settings → General → Root Directory → set to `frontend` → Save → Redeploy.
-   (Without this, Vercel tries to build from repo root and fails.)
 
-3. **Cloud backend** — backend only runs locally. Railway.app (~$5/mo) is the recommended
+4. **Cloud backend** — backend only runs locally. Railway.app (~$5/mo) is the recommended
    next step for a fully public deployment.
 
-### Debug workflow for zero results
+### Quick test commands
 
 ```bash
-# Step 1 — pull latest code and restart
-cd ~/Desktop/jubilant-eureka
-git pull
-docker compose down && docker compose up --build -d
+# Test Homes + Chintai end-to-end (bypasses Celery)
+docker compose exec worker python -c "
+import asyncio
+from app.models.search import SearchCriteria, Source, FloorPlan, WalkMinutes
+from app.scrapers.manager import run_all_scrapers
+async def test():
+    c = SearchCriteria(wards=['suginami','nakano'], rent_min=10.0, rent_max=12.0,
+        size_min_m2=25.0, floor_plans=[FloorPlan.LDK1, FloorPlan.DK1],
+        walk_minutes=WalkMinutes.TEN, sources=[Source.HOMES, Source.CHINTAI], max_pages=2)
+    listings, stats = await run_all_scrapers(c)
+    print(f'raw={stats[\"total_raw\"]} passed={stats[\"total_passed\"]}')
+    for src, s in stats['per_source'].items():
+        print(f'  [{src}] raw={s[\"raw_count\"]} passed={s[\"passed_count\"]} excl={s[\"excluded_by\"]}')
+asyncio.run(test())
+"
 
-# Step 2 — run standalone scraper test (bypasses Celery entirely)
-docker compose exec worker python test_scraper.py
+# Run filter test suite
+docker compose exec worker python test_filters.py
 
-# If it prints listings → scraper works, Celery connection is the issue
-# If it prints "No listing selector matched" + class list → paste that output,
-#   update selectors in backend/app/scrapers/homes.py to match
-
-# Step 3 — inspect raw HTML if needed
-docker compose exec worker python debug_html.py
-
-# Step 4 — trigger via API and watch logs
+# Trigger via API
 curl -X POST http://localhost:8000/api/search/ \
   -H "Content-Type: application/json" \
-  -d '{"wards":["suginami"],"rent_min":10,"rent_max":12,"floor_plans":["1LDK"],"walk_minutes":10,"sources":["homes"],"max_pages":1}'
-
+  -d '{"wards":["suginami","nakano"],"rent_min":10,"rent_max":12,"floor_plans":["1LDK","1DK"],"walk_minutes":10,"size_min_m2":25,"sources":["homes","chintai"],"max_pages":2}'
 docker compose logs worker --tail=100 -f
 ```
 
-### Files added/changed this session (April 4)
+### Files added/changed (April 5–6 2026)
 | File | Change |
 |---|---|
-| `backend/test_scraper.py` | **New** — standalone scraper test, bypasses Celery |
-| `backend/app/scrapers/homes.py` | Expanded to 7 CSS selector strategies; logs class names on failure |
-| `backend/app/scrapers/base.py` | Added 2.5s extra wait after page load for JS hydration |
-| `docker-compose.yml` | Removed obsolete `version` attribute |
-| `README.md` | **New** — human-readable setup guide |
-| `CLAUDE.md` | Added maintenance instructions + refreshed status |
+| `backend/app/scrapers/chintai.py` | **Full rewrite** — correct URL `/tokyo/area/{ward_code}/list/`, params `yen_from/yen_to/menseki_from/tsukin/madori`, multi-ward iteration, fixed l-table parsing for station/walk/age, cassette_detail tbody unit rows |
+| `backend/app/scrapers/homes.py` | Multi-ward iteration via `_build_url_for_ward()`, URL-based dedup, `build_search_url` refactored |
+| `backend/app/scrapers/suumo.py` | Homepage warmup visit before search, omit default params (no `et=9999` etc.) |
+| `backend/app/scrapers/manager.py` | Per-source stats, building_age post-filter, returns `tuple[list, dict]` |
+| `backend/app/tasks/scrape.py` | Unpacks tuple, persists `scrape_stats` |
+| `backend/app/db/models.py` | Added `scrape_stats` JSONB column |
+| `backend/app/models/listing.py` | Added `ExclusionBreakdown`, `SourceDebugStats`, `DebugResponse`, `scrape_stats` on `SearchJobOut` |
+| `backend/app/api/routes/search.py` | Added `GET /{job_id}/debug` endpoint |
+| `backend/test_filters.py` | **New** — 8 filter test cases |
+| `frontend/src/lib/api.ts` | New debug types + `getJobDebug()` |
+| `frontend/src/components/ScrapeDebugPanel.tsx` | **New** — collapsible debug panel |
+| `frontend/src/components/ListingsTable.tsx` | Alternating rows, sticky header, rose-700 rent, "View →" links |
+| `frontend/src/components/SearchForm.tsx` | String-state inputs, max size field, rent validation, ward popover, rose-700 |
+| `frontend/src/app/layout.tsx` | Rose-700 header, 🏯 Tokyo Rooms branding, Inter font |
+| `frontend/src/app/page.tsx` | Hero section, debug panel wired in |
+| `frontend/tailwind.config.ts` | Inter font variable |

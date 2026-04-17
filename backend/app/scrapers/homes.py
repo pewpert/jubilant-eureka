@@ -41,6 +41,7 @@ from playwright.async_api import Page
 from bs4 import BeautifulSoup
 
 from app.scrapers.base import BaseScraper
+from app.scrapers.transport import parse_transport
 from app.models.search import SearchCriteria, FloorPlan
 
 logger = logging.getLogger(__name__)
@@ -115,45 +116,17 @@ def _parse_walk(text: str | None) -> int | None:
 class HomesScraper(BaseScraper):
     source_name = "homes"
 
-    def build_search_url(self, page_num: int = 1) -> str:
-        """
-        Build the correct homes.co.jp URL using the theme/14130 pattern.
-
-        Priority:
-          1. If a station name matches a known code → station-based URL
-          2. If wards are selected → first ward city-based URL
-          3. Fallback → all Tokyo (no geo filter)
-
-        The theme/14130 segment filters for 1LDK and makes cb/ct work correctly.
-        """
+    def _build_url_for_ward(self, ward_slug: str | None, page_num: int) -> str:
+        """Build search URL for a specific ward (or all-Tokyo if None)."""
         c = self.criteria
+        use_theme = FloorPlan.LDK1 in c.floor_plans or FloorPlan.DK1 in c.floor_plans
 
-        # Determine geo path segment
-        station_code = None
-        if c.station:
-            # Try to match station name to a known code
-            for name, code in KNOWN_STATION_CODES.items():
-                if name.lower() in c.station.lower():
-                    station_code = code
-                    break
-
-        if station_code:
-            geo = f"{station_code}-st"
-        elif c.wards:
-            ward_slug = c.wards[0]
+        if ward_slug:
             geo = WARD_TO_CITY_SLUG.get(ward_slug, f"{ward_slug}-city")
+            path = f"/theme/{HOMES_THEME_1LDK}/tokyo/{geo}/list/" if use_theme else f"/tokyo/{geo}/list/"
         else:
-            geo = "tokyo"  # broad search
+            path = "/tokyo/list/"
 
-        # Use theme/14130 when searching for 1LDK (most common base case)
-        # If no floor plan filter or 1LDK is included, use the theme URL.
-        use_theme = not c.floor_plans or FloorPlan.LDK1 in c.floor_plans or FloorPlan.DK1 in c.floor_plans
-        if use_theme:
-            path = f"/theme/{HOMES_THEME_1LDK}/tokyo/{geo}/list/"
-        else:
-            path = f"/tokyo/{geo}/list/"
-
-        # Query params — cb/ct are in 万円, which is what homes.co.jp expects
         params: list[tuple[str, str]] = []
         if c.rent_min > 0:
             params.append(("cb", str(c.rent_min)))
@@ -165,7 +138,6 @@ class HomesScraper(BaseScraper):
             params.append(("mt", str(int(c.size_max_m2))))
         if c.walk_minutes.value < 9999:
             params.append(("et", str(c.walk_minutes.value)))
-        # Note: building age filter is not a simple param on homes — omit for now
         if page_num > 1:
             params.append(("page", str(page_num)))
 
@@ -173,140 +145,217 @@ class HomesScraper(BaseScraper):
         base = f"{HOMES_BASE}{path}"
         return f"{base}?{qs}" if qs else base
 
-    # CSS selector strategies to try in order (homes.co.jp changes markup periodically)
-    _CARD_SELECTORS = [
-        # Current layout (verified ~2024)
-        ".mod-mergeBuilding--rent",
-        # Alternate layout / older version
-        ".prg-cassette",
-        # Generic fallback — any section/article that contains a price
-        "section.cassette",
-        "article.cassette",
-        # Broader fallback
-        "[class*='cassette']",
-        "[class*='bukken']",
-        "[class*='property']",
-    ]
+    async def scrape(self):
+        """Override to iterate over all selected wards and dedup by URL."""
+        wards = self.criteria.wards if self.criteria.wards else [None]  # type: ignore[list-item]
+
+        seen_urls: set[str] = set()
+        context = await self._new_context()
+        page = await self._new_page(context)
+
+        try:
+            for ward_slug in wards:
+                for page_num in range(1, self.criteria.max_pages + 1):
+                    url = self._build_url_for_ward(ward_slug, page_num)
+                    logger.info("[homes] Scraping page %d (ward=%s) → %s", page_num, ward_slug, url)
+
+                    try:
+                        await self._goto_with_retry(page, url)
+                    except Exception as exc:
+                        logger.error("[homes] Failed to load page: %s", exc)
+                        break
+
+                    html = await page.content()
+                    title = await page.title()
+                    logger.info("[homes] Page title: %s | HTML length: %d", title, len(html))
+
+                    if "アクセスが集中" in html or "robot" in title.lower() or len(html) < 3000:
+                        logger.warning("[homes] Block page detected — aborting scrape")
+                        self.blocked = True
+                        break
+
+                    import os as _os
+                    with open(f"/tmp/debug_homes_p{page_num}.html", "w", encoding="utf-8") as f:
+                        f.write(html)
+
+                    listings = await self.parse_listings_page(page)
+                    logger.info("[homes] Page %d → %d listings", page_num, len(listings))
+
+                    found_new = False
+                    for listing in listings:
+                        listing["source"] = self.source_name
+                        src_url = listing.get("source_url", "")
+                        if src_url and src_url in seen_urls:
+                            continue
+                        if src_url:
+                            seen_urls.add(src_url)
+                        found_new = True
+                        yield listing
+
+                    if not listings or not found_new or not await self.has_next_page(page):
+                        break
+                if self.blocked:
+                    break
+        finally:
+            await context.close()
+
+    def build_search_url(self, page_num: int = 1) -> str:
+        """Return URL for first ward (used by manager for stats URL capture)."""
+        ward_slug = self.criteria.wards[0] if self.criteria.wards else None
+        # Handle station override
+        if self.criteria.station:
+            for name, code in KNOWN_STATION_CODES.items():
+                if name.lower() in self.criteria.station.lower():
+                    c = self.criteria
+                    use_theme = FloorPlan.LDK1 in c.floor_plans or FloorPlan.DK1 in c.floor_plans
+                    geo = f"{code}-st"
+                    path = f"/theme/{HOMES_THEME_1LDK}/tokyo/{geo}/list/" if use_theme else f"/tokyo/{geo}/list/"
+                    params: list[tuple[str, str]] = []
+                    if c.rent_min > 0:
+                        params.append(("cb", str(c.rent_min)))
+                    if c.rent_max < 9999:
+                        params.append(("ct", str(c.rent_max)))
+                    if c.size_min_m2 > 0:
+                        params.append(("mb", str(int(c.size_min_m2))))
+                    if c.size_max_m2 < 9999:
+                        params.append(("mt", str(int(c.size_max_m2))))
+                    if c.walk_minutes.value < 9999:
+                        params.append(("et", str(c.walk_minutes.value)))
+                    if page_num > 1:
+                        params.append(("page", str(page_num)))
+                    qs = "&".join(f"{k}={v}" for k, v in params)
+                    base = f"{HOMES_BASE}{path}"
+                    return f"{base}?{qs}" if qs else base
+        return self._build_url_for_ward(ward_slug, page_num)
 
     async def parse_listings_page(self, page: Page) -> list[dict]:
-        # Wait for any known listing container — try all selectors
-        combined = ", ".join(self._CARD_SELECTORS)
+        # Main listing cards: div.mod-mergeBuilding--rent--photo
         try:
-            await page.wait_for_selector(combined, timeout=20000)
+            await page.wait_for_selector("div.mod-mergeBuilding--rent--photo", timeout=20000)
         except Exception:
-            # Page loaded but no listing cards visible — log what we actually got
             html_preview = await page.content()
             title = await page.title()
-            logger.warning(
-                "[homes] No listing selector matched. title=%r  html_len=%d",
-                title, len(html_preview),
-            )
-            # Log classes that exist in the page to help diagnose selector drift
+            logger.warning("[homes] No cards found. title=%r html_len=%d", title, len(html_preview))
             soup_dbg = BeautifulSoup(html_preview, "lxml")
             all_cls: set[str] = set()
             for tag in soup_dbg.find_all(class_=True):
                 for c in tag.get("class", []):
                     all_cls.add(c)
-            kw = ["list", "item", "card", "cassette", "property", "bukken",
-                  "building", "result", "rent", "merge", "unit", "mod-", "prg-"]
+            kw = ["list", "item", "card", "cassette", "bukken", "building", "merge", "prg-"]
             hits = sorted(c for c in all_cls if any(k in c.lower() for k in kw))[:30]
-            logger.warning("[homes] Classes on page that look listing-related: %s", hits)
+            logger.warning("[homes] Classes on page: %s", hits)
             return []
 
         html = await page.content()
         soup = BeautifulSoup(html, "lxml")
+        cards = soup.select("div.mod-mergeBuilding--rent--photo")
+        logger.info("[homes] Found %d building cards", len(cards))
+
         results = []
+        for card in cards:
+            # Building name and first listing URL
+            name_el = card.select_one(".moduleHead a, h2 a, h3 a")
+            building_name = name_el.get_text(strip=True) if name_el else None
 
-        # Try each selector strategy until we find cards
-        cards = []
-        for sel in self._CARD_SELECTORS:
-            cards = soup.select(sel)
-            if cards:
-                logger.info("[homes] Using selector %r — found %d cards", sel, len(cards))
-                break
+            # Building-level fields from first tbody (th/td rows)
+            tbodies = card.select("tbody")
+            if not tbodies:
+                continue
+            bldg_fields: dict[str, str] = {}
+            for row in tbodies[0].select("tr"):
+                th = row.select_one("th")
+                td = row.select_one("td")
+                if th and td:
+                    bldg_fields[th.get_text(strip=True)] = td.get_text(strip=True)
 
-        if not cards:
-            logger.warning("[homes] parse_listings_page: no cards found despite wait_for_selector passing")
-            return []
+            address = bldg_fields.get("所在地")
 
-        # Homes renders each building/unit as a <section> with class mod-mergeBuilding--rent
-        for item in cards:
-            building_name = self._text(item, ".mod-mergeBuilding__buildingName, .bukken-name")
-            address = self._text(item, ".mod-mergeBuilding__address, .bukken-address")
+            # Nearest station + line from 交通 field
+            traffic_raw = bldg_fields.get("交通", "")
+            line, station, walk = parse_transport(traffic_raw)
 
-            # Transport
-            station = None
-            walk = None
-            for li in item.select(".mod-mergeBuilding__transport li, .bukken-transport li"):
-                txt = li.get_text(strip=True)
-                m = re.search(r"(.+?駅).*?歩(\d+)分", txt)
-                if m:
-                    station = m.group(1)
-                    walk = int(m.group(2))
-                    break
+            # Building age from 築年数/階数
+            age_raw = bldg_fields.get("築年数/階数") or bldg_fields.get("築年数") or ""
+            age_years = None
+            ma = re.search(r"(\d+)年", age_raw)
+            if ma:
+                age_years = int(ma.group(1))
+            elif "新築" in age_raw:
+                age_years = 0
 
-            # Building age
-            age_text = self._text(item, ".mod-mergeBuilding__spec, .bukken-age")
-            age_years, built_year = None, None
-            if age_text:
-                m = re.search(r"築(\d+)年", age_text)
-                if m:
-                    age_years = int(m.group(1))
-                if "新築" in age_text:
-                    age_years = 0
-
-            building_type = self._text(item, ".mod-mergeBuilding__buildingType, .bukken-type")
-            image_tag = item.select_one("img.mod-mergeBuilding__img, img.bukken-img")
+            image_tag = card.select_one("img")
             image_url = image_tag.get("src") if image_tag else None
 
-            # Units — nested inside the building card
-            unit_els = item.select(".mod-mergeUnit, .prg-unit, [class*='mergeUnit'], [class*='unit--']")
-            # Fallback: treat the card itself as the unit if no nested units found
-            unit_sources = unit_els if unit_els else [item]
+            # Unit rows from second tbody — each data row has: floor | price | layout+size | ... | detail link
+            unit_tbody = tbodies[1] if len(tbodies) > 1 else None
+            if unit_tbody is None:
+                continue
 
-            for unit in unit_sources:
-                rent_text = self._text(unit, ".mod-mergeUnit__price, .price-rent, [class*='price'], [class*='rent']")
-                fee_text = self._text(unit, ".mod-mergeUnit__managementFee, .price-fee, [class*='kanri'], [class*='fee']")
-                deposit_text = self._text(unit, ".mod-mergeUnit__deposit, .price-shikikin, [class*='shikikin'], [class*='deposit']")
-                key_money_text = self._text(unit, ".mod-mergeUnit__keyMoney, .price-reikin, [class*='reikin'], [class*='key']")
-                floor_plan_text = self._text(unit, ".mod-mergeUnit__floorPlan, .madori, [class*='madori'], [class*='floorPlan'], [class*='floor-plan']")
-                size_text = self._text(unit, ".mod-mergeUnit__floorSpace, .menseki, [class*='menseki'], [class*='floorSpace'], [class*='size']")
-                floor_text = self._text(unit, ".mod-mergeUnit__floor, .floor, [class*='floor']")
+            unit_links = unit_tbody.select("a[href*='/chintai/']")
+            unit_rows = [r for r in unit_tbody.select("tr") if r.select_one("td")]
 
-                link_el = unit.select_one("a[href*='/chintai/']") or unit.select_one("a[href]")
-                detail_url = link_el["href"] if link_el else ""
+            for i, row in enumerate(unit_rows):
+                tds = row.select("td")
+                if len(tds) < 4:
+                    continue
+                raw_text = row.get_text(separator=" ", strip=True)
+
+                # Price cell contains "X.X万円/fee"
+                rent, mgmt_fee = None, None
+                price_m = re.search(r"([\d.]+)\s*万円\s*/\s*([\d,]+円|-)", raw_text)
+                if price_m:
+                    rent = int(float(price_m.group(1)) * 10000)
+                    mgmt_fee = _parse_yen(price_m.group(2))
+
+                # 敷金/礼金
+                dep_m = re.search(r"([\d.]+)ヶ月/([\d.]+)ヶ月", raw_text)
+                deposit = int(float(dep_m.group(1)) * rent) if (dep_m and rent) else None
+                key_money = int(float(dep_m.group(2)) * rent) if (dep_m and rent) else None
+
+                # Layout and size — e.g. "1LDK30m²"
+                floor_plan_m = re.search(r"(1LDK|1DK|2LDK|2DK|ワンルーム|1K|1R)", raw_text)
+                floor_plan = floor_plan_m.group(1) if floor_plan_m else None
+                size_m = re.search(r"([\d.]+)m", raw_text)
+                size_m2 = float(size_m.group(1)) if size_m else None
+
+                # Floor
+                floor_m = re.search(r"(\d+)階", raw_text)
+                floor_num = int(floor_m.group(1)) if floor_m else None
+
+                # Detail URL — prefer a link inside this row; fall back to indexed lookup.
+                # Indexed lookup is fragile when the row/link counts diverge (e.g. if a row
+                # has no link, the indexes shift and we'd attribute the wrong URL).
+                row_link = row.select_one("a[href*='/chintai/']")
+                if row_link:
+                    detail_url = row_link.get("href", "")
+                else:
+                    detail_url = unit_links[i]["href"] if i < len(unit_links) else ""
                 if detail_url and not detail_url.startswith("http"):
                     detail_url = f"https://www.homes.co.jp{detail_url}"
 
-                # Skip if we can't extract any meaningful data
-                if not rent_text and not floor_plan_text:
+                if not rent and not floor_plan:
                     continue
-
-                floor_num = None
-                if floor_text:
-                    m = re.search(r"(\d+)階", floor_text)
-                    if m:
-                        floor_num = int(m.group(1))
 
                 results.append({
                     "source_url": detail_url,
-                    "title": building_name or floor_plan_text or "",
+                    "title": building_name or floor_plan or "",
                     "building_name": building_name,
-                    "rent": _parse_yen(rent_text),
-                    "management_fee": _parse_yen(fee_text),
-                    "deposit": _parse_yen(deposit_text),
-                    "key_money": _parse_yen(key_money_text),
+                    "rent": rent,
+                    "management_fee": mgmt_fee,
+                    "deposit": deposit,
+                    "key_money": key_money,
                     "address": address,
                     "ward": None,
                     "nearest_station": station,
+                    "nearest_line": line,
                     "walk_minutes": walk,
-                    "floor_plan": floor_plan_text,
-                    "size_m2": _parse_size(size_text),
+                    "floor_plan": floor_plan,
+                    "size_m2": size_m2,
                     "floor": floor_num,
                     "total_floors": None,
                     "building_age_years": age_years,
-                    "built_year": built_year,
-                    "building_type": building_type,
+                    "built_year": None,
+                    "building_type": None,
                     "features": [],
                     "image_url": image_url,
                 })

@@ -73,6 +73,7 @@ class BaseScraper(ABC):
         self.settings = get_settings()
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
+        self.blocked: bool = False
 
     # ------------------------------------------------------------------ #
     # Context manager — manages Playwright + Browser lifecycle             #

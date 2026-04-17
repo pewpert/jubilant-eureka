@@ -62,8 +62,15 @@ def scrape_apartments(self, job_id: str, criteria_dict: dict) -> dict:
 
     try:
         criteria = SearchCriteria(**criteria_dict)
-        # Run the async scraper loop inside a sync task
-        raw_listings = asyncio.run(_scrape(criteria))
+
+        def update_progress(msg: str) -> None:
+            with Session(sync_engine) as _db:
+                _job = _db.get(SearchJob, uuid.UUID(job_id))
+                if _job:
+                    _job.progress = msg
+                    _db.commit()
+
+        raw_listings, scrape_stats = asyncio.run(_scrape(criteria, update_progress))
 
         with Session(sync_engine) as db:
             job = db.get(SearchJob, uuid.UUID(job_id))
@@ -71,7 +78,7 @@ def scrape_apartments(self, job_id: str, criteria_dict: dict) -> dict:
             for raw in raw_listings:
                 listing = Listing(
                     job_id=job.id,
-                    **{k: v for k, v in raw.items() if k != "source"},
+                    **{k: v for k, v in raw.items() if k not in ("source", "_excluded_reason")},
                     source=raw.get("source", "unknown"),
                 )
                 db.add(listing)
@@ -79,6 +86,7 @@ def scrape_apartments(self, job_id: str, criteria_dict: dict) -> dict:
             job.status = "completed"
             job.completed_at = datetime.now(timezone.utc)
             job.total_results = len(raw_listings)
+            job.scrape_stats = scrape_stats
             db.commit()
 
         logger.info("Job %s completed — %d listings", job_id, len(raw_listings))
@@ -97,6 +105,5 @@ def scrape_apartments(self, job_id: str, criteria_dict: dict) -> dict:
         raise self.retry(exc=exc, countdown=10)
 
 
-async def _scrape(criteria: SearchCriteria) -> list[dict]:
-    """Async wrapper called by the sync Celery task."""
-    return await run_all_scrapers(criteria)
+async def _scrape(criteria: SearchCriteria, progress_cb=None) -> tuple[list[dict], dict]:
+    return await run_all_scrapers(criteria, progress_cb=progress_cb)
