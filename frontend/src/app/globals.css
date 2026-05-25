@@ -1,3 +1,35 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Dark-mode defaults for native form controls + common card/input patterns.
+   Lets components keep light-mode Tailwind classes without dark: everywhere. */
+@layer base {
+  .dark input[type="text"],
+  .dark input[type="number"],
+  .dark input[type="search"],
+  .dark select,
+  .dark textarea {
+    background-color: rgb(17 24 39);        /* gray-900 */
+    border-color: rgb(55 65 81);            /* gray-700 */
+    color: rgb(243 244 246);                /* gray-100 */
+  }
+  .dark input::placeholder,
+  .dark textarea::placeholder {
+    color: rgb(107 114 128);                /* gray-500 */
+  }
+}
+
+@layer components {
+  /* Card surface: white in light, gray-900 in dark */
+  .card {
+    @apply bg-white dark:bg-gray-900 border-gray-100 dark:border-gray-800;
+  }
+  /* Chip / pill button that toggles selected state */
+  .chip {
+    @apply bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-700 hover:border-rose-400;
+  }
+  .chip-active {
+    @apply bg-rose-600 text-white border-rose-600;
+  }
+}

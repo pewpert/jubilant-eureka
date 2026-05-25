@@ -57,8 +57,9 @@ export default function SearchForm({ onSubmit, loading }: Props) {
   const [floorPlans, setFloorPlans] = useState<string[]>([]);
   const [walkMinutes, setWalkMinutes] = useState(9999);
   const [buildingAge, setBuildingAge] = useState(9999);
-  const [sources, setSources] = useState(["homes", "chintai"]);
+  const [sources, setSources] = useState(["suumo", "homes", "chintai"]);
   const [maxPages, setMaxPages] = useState(2);
+  const [motoOnly, setMotoOnly] = useState(false);
 
   function toggleWard(slug: string) {
     setWards((prev) =>
@@ -107,6 +108,8 @@ export default function SearchForm({ onSubmit, loading }: Props) {
       building_age_max: buildingAge,
       sources,
       max_pages: maxPages,
+      enrich_details: true,
+      moto_parking_only: motoOnly,
     });
   }
 
@@ -119,7 +122,7 @@ export default function SearchForm({ onSubmit, loading }: Props) {
       : `${wards.length} wards selected`;
 
   return (
-    <form onSubmit={handleSubmit} className="bg-white rounded-2xl shadow-md border border-gray-100 overflow-hidden">
+    <form onSubmit={handleSubmit} className="bg-white dark:bg-gray-900 rounded-2xl shadow-md border border-gray-100 dark:border-gray-800 overflow-hidden">
       <div className="p-6 space-y-5">
 
         {/* Area */}
@@ -133,11 +136,11 @@ export default function SearchForm({ onSubmit, loading }: Props) {
               onClick={() => setWardPickerOpen((v) => !v)}
               className="w-full flex items-center justify-between border border-gray-300 rounded-lg px-3 py-2 text-sm hover:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-500 transition-colors"
             >
-              <span className={wards.length === 0 ? "text-gray-400" : "text-gray-900"}>{wardSummary}</span>
+              <span className={wards.length === 0 ? "text-gray-400" : "text-gray-900 dark:text-gray-100"}>{wardSummary}</span>
               <span className="text-gray-400 text-xs">{wardPickerOpen ? "▲" : "▼"}</span>
             </button>
             {wardPickerOpen && (
-              <div className="absolute z-20 top-full mt-1 left-0 right-0 bg-white border border-gray-200 rounded-xl shadow-lg p-3">
+              <div className="absolute z-20 top-full mt-1 left-0 right-0 bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl shadow-lg p-3">
                 <div className="flex justify-between items-center mb-2">
                   <span className="text-xs text-gray-500">{wards.length} selected</span>
                   <button
@@ -155,7 +158,7 @@ export default function SearchForm({ onSubmit, loading }: Props) {
                       className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
                         wards.includes(ward.slug)
                           ? "bg-rose-600 text-white border-rose-600"
-                          : "bg-white text-gray-600 border-gray-300 hover:border-rose-400"
+                          : "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-700 hover:border-rose-400"
                       }`}
                     >
                       {ward.label}
@@ -308,7 +311,7 @@ export default function SearchForm({ onSubmit, loading }: Props) {
         </div>
 
         {/* Sources + pages */}
-        <div className="flex flex-wrap items-end gap-6 pt-1 border-t border-gray-100">
+        <div className="flex flex-wrap items-end gap-6 pt-1 border-t border-gray-100 dark:border-gray-800">
           <div>
             <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Sources</label>
             <div className="flex gap-3">
@@ -339,6 +342,22 @@ export default function SearchForm({ onSubmit, loading }: Props) {
                 <option key={n} value={n}>{n}</option>
               ))}
             </select>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Parking</label>
+            <button
+              type="button"
+              onClick={() => setMotoOnly((v) => !v)}
+              aria-pressed={motoOnly}
+              title="Only show listings whose detail page confirms motorcycle parking. Leaves out listings that simply don't state it."
+              className={`flex items-center gap-1.5 text-sm font-semibold px-3 py-2 rounded-lg border transition-colors ${
+                motoOnly
+                  ? "bg-rose-700 text-white border-rose-700"
+                  : "bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-700 hover:border-rose-400"
+              }`}
+            >
+              🏍 Motorcycle parking only
+            </button>
           </div>
         </div>
       </div>

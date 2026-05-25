@@ -42,6 +42,7 @@ from bs4 import BeautifulSoup
 
 from app.scrapers.base import BaseScraper
 from app.scrapers.transport import parse_transport
+from app.scrapers.detail_features import parse_detail_features
 from app.models.search import SearchCriteria, FloorPlan
 
 logger = logging.getLogger(__name__)
@@ -370,6 +371,13 @@ class HomesScraper(BaseScraper):
             "a[class*='next']:not([class*='disabled'])"
         )
         return next_btn is not None
+
+    async def parse_detail(self, page: Page, url: str, built_year: int | None = None) -> dict:
+        """Fetch a listing detail page and extract parking / amenity flags."""
+        await self._goto_with_retry(page, url)
+        html = await page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        return parse_detail_features(soup.get_text(separator=" "), built_year)
 
     @staticmethod
     def _text(parent, selector: str) -> str | None:

@@ -195,6 +195,56 @@ class BaseScraper(ABC):
         """Return True if there is a next page of results."""
         ...
 
+    async def parse_detail(self, page: Page, url: str, built_year: int | None = None) -> dict:
+        """
+        Fetch a listing's detail page and extract amenity/parking flags.
+
+        Default implementation returns an empty dict (no enrichment). Scrapers
+        that support detail-page parsing override this. Returning {} means the
+        enrichment pass leaves the listing's amenity fields at their defaults.
+        """
+        return {}
+
+    async def enrich_listings(self, listings: list[dict], max_fetches: int) -> None:
+        """
+        Visit detail pages for up to ``max_fetches`` listings (in place) and
+        merge parking/amenity fields onto each dict. Reuses a single browser
+        context. Failures on individual listings are logged and skipped — a
+        bad detail page must never fail the whole job.
+        """
+        if max_fetches <= 0 or not listings:
+            return
+
+        context = await self._new_context()
+        page = await self._new_page(context)
+        fetched = 0
+        try:
+            for listing in listings:
+                if fetched >= max_fetches:
+                    break
+                url = listing.get("source_url") or ""
+                if not url:
+                    continue
+                try:
+                    extra = await self.parse_detail(
+                        page, url, listing.get("built_year")
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] detail enrichment failed for %s: %s",
+                        self.source_name, url, exc,
+                    )
+                    continue
+                if extra:
+                    # Don't clobber an existing non-empty features list.
+                    existing = listing.get("features") or []
+                    merged_features = list(dict.fromkeys(existing + extra.pop("features", [])))
+                    listing.update(extra)
+                    listing["features"] = merged_features
+                fetched += 1
+        finally:
+            await context.close()
+
     # ------------------------------------------------------------------ #
     # Main scrape loop — shared by all subclasses                         #
     # ------------------------------------------------------------------ #

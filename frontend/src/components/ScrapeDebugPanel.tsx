@@ -45,13 +45,13 @@ export default function ScrapeDebugPanel({ info, defaultOpen }: Props) {
   const allFiltered = info.total_raw > 0 && info.total_passed === 0;
 
   return (
-    <div className="border border-gray-200 rounded-xl overflow-hidden text-sm">
+    <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-xl overflow-hidden text-sm">
       {/* Header toggle */}
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+        className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-800 hover:bg-gray-100 dark:hover:bg-gray-700/60 transition-colors text-left"
       >
-        <span className="font-medium text-gray-700 flex items-center gap-2">
+        <span className="font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
           {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
           Scrape details
           <span className="text-xs font-normal text-gray-400">
@@ -127,8 +127,8 @@ export default function ScrapeDebugPanel({ info, defaultOpen }: Props) {
                         {stats.passed_count}
                       </td>
                       {(["rent", "size", "walk", "building_age", "floor_plan"] as const).map((k) => (
-                        <td key={k} className={`px-4 py-2 text-right ${(excl as Record<string, number>)[k] > 0 ? "text-red-600 font-medium" : "text-gray-300"}`}>
-                          {(excl as Record<string, number>)[k] || "—"}
+                        <td key={k} className={`px-4 py-2 text-right ${excl[k] > 0 ? "text-red-600 font-medium" : "text-gray-300"}`}>
+                          {excl[k] || "—"}
                         </td>
                       ))}
                       <td className="px-4 py-2">

@@ -187,10 +187,19 @@ Misc covers: lock replacement, fire insurance, guarantor company fee.
 
 ---
 
-## Current Status (April 6 2026)
+## Current Status (May 25 2026)
 
 ### What works
 - Full Docker stack runs locally on Mac (Postgres, Redis, FastAPI, Celery worker, Playwright)
+- **Detail-page amenity enrichment (May 25 2026)**: after filtering, surviving listings'
+  detail pages are fetched (capped by `max_detail_fetches`, default 25, split across sources)
+  to extract motorcycle/bicycle/car parking (3-state: available/none/unknown), 外国人 (foreigner-OK),
+  and earthquake standard (新耐震/旧耐震, inferred from `built_year` when not stated).
+  Shared parser: `backend/app/scrapers/detail_features.py`. Suumo + Homes implement `parse_detail`;
+  Chintai falls back to the base no-op. Frontend shows a Parking column (🏍/🚲/🚗 badges),
+  a "🏍 Parking" sort option, 新耐震/旧耐震/外国人可 badges on the Building cell, and the
+  new fields in CSV export. Parking is a badge/sort, NOT a hard filter — a missing badge
+  means "not stated," not "confirmed none."
 - **Homes.co.jp scraper confirmed working**: 117 raw listings for Suginami + Nakano, 2 pages
 - **Chintai.net scraper confirmed working**: 112 raw listings for same criteria
 - Both scrapers iterate all selected wards and dedup by URL
@@ -206,24 +215,55 @@ Misc covers: lock replacement, fire insurance, guarantor company fee.
 - `backend/test_filters.py` written — 8 test cases for all filter types
 - HTML debug snapshots saved to `/tmp/debug_{source}_p{n}.html` on each scrape run
 
-### Suumo status — IP-blocked (temporary)
-Suumo returns their rate-limit page ("アクセス集中に関するお詫び", 1525 bytes) from Docker on this machine.
-This is a **temporary IP block** caused by repeated test requests during development.
-- The scraper code is correct (same structure as before, warmup visit added)
-- It will work from a fresh IP / Railway.app cloud deployment
-- Do NOT attempt to repeatedly test Suumo from Docker locally — this extends the block
-- Wait ~24h or use a VPN/proxy to test
+### Suumo status — WORKING via Firecrawl fallback (fixed May 25 2026)
+Local Playwright still gets blocked (Suumo serves a block page), but the **Firecrawl
+fallback now works** and returns full results (~48 listings for Suginami+Nakano). Two
+bugs were fixed:
+1. **Block detection was too narrow.** It only matched "アクセス集中に関するお詫び", but
+   the block page actually served is "ページを表示できません" — so the fallback never fired.
+   Now uses `_looks_blocked()` in `suumo.py`: treats a page as blocked if it lacks the
+   `.cassetteitem` marker AND (matches any known block phrase OR is <3000 bytes).
+2. **Wrong CSS selectors.** Parser used hyphenated classes (`.cassetteitem-detail-col1`)
+   but Suumo's real markup uses underscores (`.cassetteitem_detail-col1`,
+   `.cassetteitem_content-title`, `.cassetteitem_detail-col2` for transport). Station/walk/
+   name were silently null before. Fixed selectors + multi-station transport parsing.
+- `FIRECRAWL_API_KEY` is set in `.env`; results cached in Redis 30 min.
+- **Reliability fix (May 25 2026):** `scrape()` now always tries the LIVE site first and
+  falls back to Firecrawl per-page only when live is blocked *this run*. Previously a stale
+  `blocked:suumo` Redis flag made it skip live entirely for 6h ("Firecrawl-only"); when the
+  Firecrawl cache was cold that path silently yielded 0 listings (raw_count=0, blocked=false).
+  That caused an API job to return 0 Suumo results despite the scraper "working." The block
+  flag is now telemetry only — it never skips the live attempt. Verified end-to-end: a fresh
+  API job persisted suumo=109 / homes=4 / chintai=34 listings, all with URLs.
+- Live succeeds ~50% of the time even right after a block; Firecrawl recovers the rest.
+- Block flag is still written to Redis (`blocked:suumo`, 6h) for signal. `docker compose down -v`
+  only resets Postgres, NOT Redis — clear with `docker compose exec redis redis-cli DEL blocked:suumo`.
+- Suumo listings often lack a clean building name on the list page; `building_name` falls
+  back to the header text (line/station/age). Detail link still works.
 
 ### What needs fixing (priority order)
 1. **Chintai filter mismatch** — Chintai passes 0 listings for base case (rent 10–12万, 1LDK/1DK, Suginami+Nakano). The site returns 112 raw but all excluded by rent (103) + floor_plan (6) + size (3). The URL params `yen_from/yen_to/madori` are sent but the site may not honour them strictly for all result types. Post-filter is correctly excluding them. **This means post-filter IS working but the results are overly narrow — may need to widen criteria in testing, or the filter params need verification.**
 
-2. **Duplicate listings** — base case returns same building multiple times (e.g. 東交ビル ×2, マスコットパレス ×4). The URL-based dedup works within a source but Homes returns multiple units per building as separate dict entries with the same `source_url` (detail link). Need to verify if each unit has a unique URL or if dedup logic needs a composite key.
+2. **Duplicate listings** (still open, reconfirmed May 25 2026) — same building appears
+   many times across all 3 sources (e.g. ラフィスタ中野本町 ×4 at ¥126k/127k/128.5k/129k,
+   Brillia中野 ×2, PASEO新中野 ×2). Two distinct causes: (a) genuine multi-unit buildings
+   where each unit is a separate listing with slightly different rent/size — arguably
+   correct to show, but noisy; (b) true dupes with identical rent+size. URL-based dedup in
+   `manager.py` doesn't collapse these because units have distinct detail URLs. A fix would
+   add a composite key (building_name + layout + rent-bucket + size) and either collapse or
+   group-by-building in the UI. Deferred per Daniel (May 25).
 
 3. **Vercel Root Directory** — in the Vercel dashboard go to
    Settings → General → Root Directory → set to `frontend` → Save → Redeploy.
 
 4. **Cloud backend** — backend only runs locally. Railway.app (~$5/mo) is the recommended
    next step for a fully public deployment.
+
+5. **DB schema changed (May 25 2026)** — the `listings` table gained 5 columns
+   (`motorcycle_parking`, `bicycle_parking`, `car_parking`, `foreigner_ok`,
+   `earthquake_standard`). There's no migration tooling, so apply with a volume reset:
+   `docker compose down -v && docker compose up --build`. (Tables are auto-created on boot.)
+   Re-seed afterwards: `docker compose exec backend python seed_listings.py`.
 
 ### Quick test commands
 

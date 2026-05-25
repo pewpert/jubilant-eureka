@@ -119,10 +119,18 @@ async def run_all_scrapers(
     await asyncio.gather(*tasks, return_exceptions=True)
 
     # Merge all results and dedup across sources.
-    # Primary key: source_url. Secondary: (building_name, floor_plan, rent, size)
-    # for listings whose URL is empty or identical across sources.
+    #
+    # Two layers:
+    #  1) URL dedup — drop the literal same listing scraped twice.
+    #  2) TRUE exact-dupe dedup — same building + station + rent + size + floor.
+    #     This catches the same physical unit re-listed under different URLs
+    #     (common when multiple agencies post it). We DELIBERATELY include floor:
+    #     same building+rent+size on DIFFERENT floors are genuinely different
+    #     units and must be kept (verified against real data — e.g. エントピア中野
+    #     2F vs 4F). Listings with no floor fall back to floor_plan so we don't
+    #     over-merge when floor is unknown.
     seen_urls: set[str] = set()
-    seen_composite: set[tuple] = set()
+    seen_exact: set[tuple] = set()
     unique: list[dict] = []
     for source, listings in per_source_results.items():
         per_source_stats[source]["raw_count"] = len(listings)
@@ -132,21 +140,21 @@ async def run_all_scrapers(
                 if url in seen_urls:
                     continue
                 seen_urls.add(url)
-            else:
-                # No URL — dedup by composite key so the same unit scraped twice
-                # from different pages doesn't slip through.
-                composite = (
-                    (listing.get("building_name") or "").strip(),
-                    listing.get("floor_plan"),
-                    listing.get("rent"),
-                    listing.get("size_m2"),
-                )
-                if composite == ("", None, None, None):
-                    # Nothing to dedup on — drop it, we can't show it to the user without a URL
-                    continue
-                if composite in seen_composite:
-                    continue
-                seen_composite.add(composite)
+
+            exact = (
+                (listing.get("building_name") or "").strip(),
+                (listing.get("nearest_station") or "").strip(),
+                listing.get("rent"),
+                listing.get("size_m2"),
+                listing.get("floor") if listing.get("floor") is not None
+                    else listing.get("floor_plan"),
+            )
+            # If we have nothing identifying at all (and no URL), drop it.
+            if not url and exact == ("", "", None, None, None):
+                continue
+            if exact in seen_exact:
+                continue
+            seen_exact.add(exact)
             unique.append(listing)
 
     # Build post-scrape filter thresholds
@@ -222,11 +230,32 @@ async def run_all_scrapers(
     if dominant and total_excl.get(dominant, 0) == 0:
         dominant = None
 
+    # ------------------------------------------------------------------ #
+    # Detail-page enrichment — visit surviving listings' detail pages to    #
+    # extract parking / amenity / foreigner-OK / earthquake data.           #
+    # Bounded by max_detail_fetches; done per source so each scraper uses    #
+    # its own detail parser and a fresh browser context.                    #
+    # ------------------------------------------------------------------ #
+    if getattr(criteria, "enrich_details", False) and criteria.max_detail_fetches > 0:
+        await _enrich_filtered(criteria, filtered, progress_cb)
+
+    # Opt-in moto-parking filter — applied AFTER enrichment, since parking data
+    # only exists once detail pages are fetched. Keeps only CONFIRMED parking;
+    # never hides anything unless the user explicitly enabled it.
+    moto_filtered_out = 0
+    if getattr(criteria, "moto_parking_only", False):
+        before = len(filtered)
+        filtered = [l for l in filtered if l.get("motorcycle_parking") == "available"]
+        moto_filtered_out = before - len(filtered)
+        logger.info("[moto-filter] kept %d confirmed-moto listings (dropped %d)",
+                    len(filtered), moto_filtered_out)
+
     scrape_stats = {
         "per_source": per_source_stats,
         "total_raw": sum(s["raw_count"] for s in per_source_stats.values()),
         "total_passed": len(filtered),
         "dominant_filter": dominant,
+        "moto_filtered_out": moto_filtered_out,
     }
 
     logger.info(
@@ -235,3 +264,48 @@ async def run_all_scrapers(
         scrape_stats["total_raw"],
     )
     return filtered, scrape_stats
+
+
+async def _enrich_filtered(
+    criteria: SearchCriteria,
+    filtered: list[dict],
+    progress_cb: ProgressCb | None,
+) -> None:
+    """
+    Enrich filtered listings with detail-page amenity data, grouped by source.
+
+    Top-N strategy: the cheapest listings are enriched first (those are the ones
+    the user is most likely to act on). We sort the whole result set by rent,
+    then split the detail-fetch budget (criteria.max_detail_fetches) across the
+    sources proportionally — so each source's slice is ITS cheapest listings,
+    and the budget concentrates on the lowest-rent listings overall.
+    """
+    # Cheapest first; listings with no rent sort last.
+    ordered = sorted(filtered, key=lambda l: l.get("rent") if l.get("rent") is not None else 10**9)
+
+    by_source: dict[str, list[dict]] = {}
+    for l in ordered:
+        by_source.setdefault(l.get("source", "unknown"), []).append(l)
+
+    if not by_source:
+        return
+
+    budget = criteria.max_detail_fetches
+    total = len(filtered)
+
+    if progress_cb:
+        progress_cb("Fetching listing details (parking, amenities)…")
+
+    for source, listings in by_source.items():
+        scraper_class = SCRAPERS.get(Source(source)) if source in {s.value for s in Source} else None
+        if scraper_class is None:
+            continue
+        # Proportional share of the budget, at least 1 if this source has any.
+        share = max(1, round(budget * len(listings) / total)) if total else 0
+        if share <= 0:
+            continue
+        try:
+            async with scraper_class(criteria) as scraper:
+                await scraper.enrich_listings(listings, share)
+        except Exception as exc:
+            logger.warning("[%s] enrichment pass failed: %s", source, exc)

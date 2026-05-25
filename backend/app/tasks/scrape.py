@@ -72,13 +72,17 @@ def scrape_apartments(self, job_id: str, criteria_dict: dict) -> dict:
 
         raw_listings, scrape_stats = asyncio.run(_scrape(criteria, update_progress))
 
+        # Only spread keys that are actual Listing columns — scraper dicts may
+        # carry transient keys (e.g. _excluded_reason) that would crash the insert.
+        listing_columns = {c.name for c in Listing.__table__.columns}
+
         with Session(sync_engine) as db:
             job = db.get(SearchJob, uuid.UUID(job_id))
 
             for raw in raw_listings:
                 listing = Listing(
                     job_id=job.id,
-                    **{k: v for k, v in raw.items() if k not in ("source", "_excluded_reason")},
+                    **{k: v for k, v in raw.items() if k in listing_columns and k != "source"},
                     source=raw.get("source", "unknown"),
                 )
                 db.add(listing)

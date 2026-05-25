@@ -41,6 +41,7 @@ from bs4 import BeautifulSoup
 
 from app.scrapers.base import BaseScraper
 from app.scrapers.transport import parse_transport
+from app.scrapers.detail_features import parse_detail_features
 from app.models.search import SearchCriteria, FloorPlan, WalkMinutes
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,39 @@ FLOOR_PLAN_CODES = {
     FloorPlan.LDK3: "10",
     FloorPlan.LDK4_PLUS: "11",
 }
+
+
+# Phrases Suumo serves on its various block / error / rate-limit pages. Suumo
+# uses several depending on the kind of throttling, so we match a set rather
+# than one string. Seen in the wild:
+#   "アクセス集中に関するお詫び"   — explicit rate-limit apology page
+#   "ページを表示できません"        — generic "cannot display page" block
+#   "アクセスが集中"               — variant wording
+_BLOCK_PHRASES = (
+    "アクセス集中に関するお詫び",
+    "ページを表示できません",
+    "アクセスが集中",
+    "現在アクセスしにくい状況",
+)
+
+
+def _looks_blocked(html: str | None) -> bool:
+    """
+    True if the HTML is a Suumo block/error page rather than real results.
+
+    A genuine results page always contains the `.cassetteitem` listing card
+    marker. We treat the page as blocked if that marker is absent AND either a
+    known block phrase is present or the page is suspiciously small. Checking
+    for cassetteitem first avoids false positives on real pages that happen to
+    contain a block phrase somewhere (e.g. in a help link).
+    """
+    if not html:
+        return True
+    if "cassetteitem" in html:
+        return False
+    if len(html) < 3000:
+        return True
+    return any(phrase in html for phrase in _BLOCK_PHRASES)
 
 
 def _parse_yen(text: str | None) -> int | None:
@@ -130,83 +164,73 @@ class SuumoScraper(BaseScraper):
     source_name = "suumo"
 
     async def scrape(self):
-        """Override to warm up with a homepage visit before hitting the search URL.
-        Uses a shared block-memory to skip the local attempt entirely if Suumo
-        has rate-limited us recently (Playwright warmup costs ~5s per request)."""
+        """
+        Warm up with a homepage visit, then scrape each page LIVE first and fall
+        back to Firecrawl only for pages where the live request is blocked.
+
+        Why live-first (was: skip-live-when-recently-blocked): empirically Suumo's
+        live page succeeds ~50% of the time even right after a block, and the live
+        path is the more reliable of the two. The old "recently blocked → Firecrawl
+        only" shortcut would skip the live site for 6h based on one block; when the
+        Firecrawl cache was cold it then silently yielded 0 listings. We now always
+        try live, use Firecrawl per-page as a fallback, and only mark the whole
+        source blocked if BOTH fail. block-memory is kept as telemetry only.
+        """
         import asyncio as _asyncio
         from app.scrapers.firecrawl import fetch_html, is_recently_blocked, mark_blocked
 
-        recently_blocked = await is_recently_blocked(self.source_name)
-        if recently_blocked:
-            logger.info("[suumo] Recently blocked — skipping local scrape, going straight to Firecrawl")
+        # Telemetry only — no longer changes control flow.
+        if await is_recently_blocked(self.source_name):
+            logger.info("[suumo] Note: Suumo recently served a block page; trying live first anyway")
 
-        context = await self._new_context() if not recently_blocked else None
-        page = await self._new_page(context) if context else None
+        context = await self._new_context()
+        page = await self._new_page(context)
         try:
-            if not recently_blocked:
-                logger.info("[suumo] Warming up via homepage…")
-                try:
-                    await page.goto("https://suumo.jp/chintai/tokyo/", wait_until="domcontentloaded")
-                    await _asyncio.sleep(3)
-                except Exception as exc:
-                    logger.warning("[suumo] Warmup failed (non-fatal): %s", exc)
+            logger.info("[suumo] Warming up via homepage…")
+            try:
+                await page.goto("https://suumo.jp/chintai/tokyo/", wait_until="domcontentloaded")
+                await _asyncio.sleep(3)
+            except Exception as exc:
+                logger.warning("[suumo] Warmup failed (non-fatal): %s", exc)
 
             for page_num in range(1, self.criteria.max_pages + 1):
                 url = self.build_search_url(page_num)
-
-                if recently_blocked:
-                    # Skip local attempt — go straight to Firecrawl (may be a cache hit)
-                    logger.info("[suumo] Firecrawl-only fetch page %d → %s", page_num, url)
-                    fc_html = await fetch_html(url)
-                    if fc_html and "アクセス集中に関するお詫び" not in fc_html:
-                        listings = self._parse_html(fc_html)
-                        logger.info("[suumo] Firecrawl page %d → %d listings", page_num, len(listings))
-                        for listing in listings:
-                            listing["source"] = self.source_name
-                            yield listing
-                        if not listings:
-                            break
-                        continue
-                    logger.warning("[suumo] Firecrawl also failed — aborting")
-                    self.blocked = True
-                    break
-
                 logger.info("[suumo] Scraping page %d → %s", page_num, url)
+
+                # --- Try LIVE first ---
+                html = None
                 try:
                     await self._goto_with_retry(page, url)
+                    html = await page.content()
+                    title = await page.title()
+                    logger.info("[suumo] Page title: %s | HTML length: %d", title, len(html or ""))
                 except Exception as exc:
-                    logger.error("[suumo] Failed to load page %d: %s", page_num, exc)
-                    break
+                    logger.error("[suumo] Live load failed page %d: %s", page_num, exc)
 
-                html = await page.content()
-                title = await page.title()
-                logger.info("[suumo] Page title: %s | HTML length: %d", title, len(html))
+                live_ok = html is not None and not _looks_blocked(html)
 
-                if "アクセス集中に関するお詫び" in html or len(html) < 3000:
-                    logger.warning("[suumo] Rate-limit page detected — marking blocked + trying Firecrawl fallback")
-                    await mark_blocked(self.source_name)
+                # --- Fall back to Firecrawl for THIS page if live was blocked ---
+                if not live_ok:
+                    logger.warning("[suumo] Live blocked/failed on page %d — trying Firecrawl fallback", page_num)
+                    await mark_blocked(self.source_name)  # telemetry
                     fc_html = await fetch_html(url)
-                    if fc_html and "アクセス集中に関するお詫び" not in fc_html:
-                        logger.info("[suumo] Firecrawl returned usable HTML — parsing")
+                    if fc_html and not _looks_blocked(fc_html):
                         listings = self._parse_html(fc_html)
                         logger.info("[suumo] Firecrawl page %d → %d listings", page_num, len(listings))
                         for listing in listings:
                             listing["source"] = self.source_name
                             yield listing
-                        if not listings:
-                            break
-                        continue
-                    logger.warning("[suumo] Firecrawl unavailable or also blocked — marking source blocked")
-                    self.blocked = True
+                        # Firecrawl can't paginate reliably; stop after this page.
+                        break
+                    # Both live and Firecrawl failed for this page.
+                    if page_num == 1:
+                        self.blocked = True
+                    logger.warning("[suumo] Both live and Firecrawl failed on page %d — stopping", page_num)
                     break
 
-                import os as _os
-                with open(f"/tmp/debug_suumo_p{page_num}.html", "w", encoding="utf-8") as f:
-                    f.write(html)
-
-                listings = await self.parse_listings_page(page)
-                logger.info("[suumo] Page %d → %d listings", page_num, len(listings))
-
+                # --- Live succeeded: parse from the rendered page ---
+                listings = self._parse_html(html)
+                logger.info("[suumo] Page %d (live) → %d listings", page_num, len(listings))
                 for listing in listings:
                     listing["source"] = self.source_name
                     yield listing
@@ -277,25 +301,31 @@ class SuumoScraper(BaseScraper):
         results = []
 
         for cassette in soup.select(".cassetteitem"):
-            # Building-level info (shared by all units in this card)
-            building_name = self._text(cassette, ".cassetteitem-detail-title")
-            address = self._text(cassette, ".cassetteitem-detail-col1")
-            building_type = self._text(cassette, ".cassetteitem-detail-col2")
-            age_text = self._text(cassette, ".cassetteitem-detail-col3")
-            transport_text = self._text(cassette, ".cassetteitem-detail-col1 ~ li")
-            image_tag = cassette.select_one(".cassetteitem-object-img img")
-            image_url = image_tag.get("rel-lazy") or image_tag.get("src") if image_tag else None
+            # Building-level info (shared by all units in this card).
+            # NOTE: Suumo's real CSS classes use UNDERSCORES in the prefix
+            # (.cassetteitem_detail-col1), not hyphens. The header title block
+            # (.cassetteitem_content-title) holds "line station floors age", so
+            # we use it as a fallback name and parse transport from col2.
+            building_name = self._text(cassette, ".cassetteitem_content-title")
+            address = self._text(cassette, ".cassetteitem_detail-col1")
+            age_text = self._text(cassette, ".cassetteitem_detail-col3")
+            building_type = None
+            image_tag = cassette.select_one(".cassetteitem_object-item img, .cassetteitem-object-img img")
+            image_url = (image_tag.get("rel-lazy") or image_tag.get("src")) if image_tag else None
 
-            # Station + line + walk from transport block
+            # Station + line + walk from the transport column (col2). It packs
+            # several "線/駅 歩N分" segments separated by whitespace; pick the
+            # closest (smallest walk). parse_transport handles one segment.
             line, station, walk = None, None, None
-            transport_el = cassette.select_one(".cassetteitem-detail-col1")
+            transport_el = cassette.select_one(".cassetteitem_detail-col2")
             if transport_el:
-                # Each <li> is one line/station pair; take the closest one (smallest walk)
-                lis = transport_el.select("li") or [transport_el]
+                raw = transport_el.get_text(" ", strip=True)
+                # Split into one segment per station: each starts at a "線" name
+                # and ends after "歩N分". Regex captures "…/駅 歩N分" chunks.
+                segments = re.findall(r"[^\s].*?歩\s*\d+\s*分", raw) or [raw]
                 best: tuple[int, str | None, str | None] | None = None
-                for li in lis:
-                    txt = li.get_text(" ", strip=True)
-                    ln, st, wk = parse_transport(txt)
+                for seg in segments:
+                    ln, st, wk = parse_transport(seg)
                     if wk is not None and (best is None or wk < best[0]):
                         best = (wk, ln, st)
                 if best:
@@ -388,6 +418,13 @@ class SuumoScraper(BaseScraper):
         # Suumo shows a 次へ (next) button when there are more pages
         next_btn = await page.query_selector("a.pagination-parts:has-text('次へ')")
         return next_btn is not None
+
+    async def parse_detail(self, page: Page, url: str, built_year: int | None = None) -> dict:
+        """Fetch a listing detail page and extract parking / amenity flags."""
+        await self._goto_with_retry(page, url)
+        html = await page.content()
+        soup = BeautifulSoup(html, "html.parser")
+        return parse_detail_features(soup.get_text(separator=" "), built_year)
 
     # ------------------------------------------------------------------ #
     # Helpers                                                              #

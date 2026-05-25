@@ -76,7 +76,17 @@ class Listing(Base):
     built_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     building_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
-    # Features (stored as JSON list of strings)
+    # Amenities / parking (populated from the listing detail page).
+    # Parking fields use a 3-state string: "available" | "none" | "unknown".
+    # "unknown" means the detail page didn't mention it — NOT that there is none.
+    motorcycle_parking: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bicycle_parking: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    car_parking: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    foreigner_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # "new" (post-1981 新耐震) | "old" (pre-1981 旧耐震) | "unknown"
+    earthquake_standard: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
+    # Features (stored as JSON list of strings — raw 設備 equipment terms)
     features: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     # Media

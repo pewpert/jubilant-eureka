@@ -26,6 +26,11 @@ class ListingOut(BaseModel):
     building_age_years: int | None
     built_year: int | None
     building_type: str | None
+    motorcycle_parking: str | None = None   # "available" | "none" | "unknown"
+    bicycle_parking: str | None = None
+    car_parking: str | None = None
+    foreigner_ok: bool | None = None
+    earthquake_standard: str | None = None  # "new" | "old" | "unknown"
     features: list[str] | None
     image_url: str | None
     scraped_at: datetime

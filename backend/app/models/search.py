@@ -105,6 +105,25 @@ class SearchCriteria(BaseModel):
     # Results limit per source
     max_pages: int = Field(3, ge=1, le=10, description="Pages to scrape per source")
 
+    # Detail-page enrichment: after filtering, visit each surviving listing's
+    # detail page to extract parking / amenity / foreigner-OK / earthquake data.
+    # Capped because detail fetches are slow and more block-prone.
+    enrich_details: bool = Field(
+        True, description="Fetch detail pages to extract parking & amenity data"
+    )
+    max_detail_fetches: int = Field(
+        60, ge=0, le=200,
+        description="Max detail pages to fetch for enrichment. Enriches the "
+                    "cheapest listings first (top-N). 0 = disabled.",
+    )
+
+    # Moto-parking filter (opt-in). When True, keep only listings whose detail
+    # page CONFIRMED motorcycle parking ("available"). Never hides listings by
+    # default — "unknown"/"none" only drop when this is explicitly enabled.
+    moto_parking_only: bool = Field(
+        False, description="Show only listings with confirmed motorcycle parking",
+    )
+
     @model_validator(mode="after")
     def validate_rent_range(self):
         if self.rent_max < self.rent_min:

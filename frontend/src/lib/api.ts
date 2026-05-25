@@ -12,6 +12,9 @@ export interface SearchCriteria {
   building_age_max: number;
   sources: string[];
   max_pages: number;
+  enrich_details?: boolean;
+  max_detail_fetches?: number;
+  moto_parking_only?: boolean;
 }
 
 export interface Listing {
@@ -27,7 +30,7 @@ export interface Listing {
   address: string | null;
   ward: string | null;
   nearest_station: string | null;
-  nearest_line: string | null;
+  nearest_line?: string | null;
   walk_minutes: number | null;
   floor_plan: string | null;
   size_m2: number | null;
@@ -36,6 +39,11 @@ export interface Listing {
   building_age_years: number | null;
   built_year: number | null;
   building_type: string | null;
+  motorcycle_parking?: string | null;  // "available" | "none" | "unknown"
+  bicycle_parking?: string | null;
+  car_parking?: string | null;
+  foreigner_ok?: boolean | null;
+  earthquake_standard?: string | null;  // "new" | "old" | "unknown"
   features: string[] | null;
   image_url: string | null;
   scraped_at: string;
