@@ -11,6 +11,7 @@ import logging
 from typing import Callable
 
 from app.models.search import SearchCriteria, Source
+from app.data.commute import estimate_commute
 from app.scrapers.base import BaseScraper
 from app.scrapers.suumo import SuumoScraper
 from app.scrapers.homes import HomesScraper
@@ -238,6 +239,15 @@ async def run_all_scrapers(
     # ------------------------------------------------------------------ #
     if getattr(criteria, "enrich_details", False) and criteria.max_detail_fetches > 0:
         await _enrich_filtered(criteria, filtered, progress_cb)
+
+    # Attach offline commute estimate (walk-to-station + station→hub train time).
+    # Cheap, no network — just a table lookup keyed on the scraped station.
+    for l in filtered:
+        est = estimate_commute(l.get("nearest_station"), l.get("walk_minutes"))
+        if est is not None:
+            l["commute_tokyo_min"] = est["tokyo_total"]
+            l["commute_shinjuku_min"] = est["shinjuku_total"]
+            l["commute_score"] = est["score"]
 
     # Opt-in moto-parking filter — applied AFTER enrichment, since parking data
     # only exists once detail pages are fetched. Keeps only CONFIRMED parking;

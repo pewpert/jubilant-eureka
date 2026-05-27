@@ -86,6 +86,12 @@ class Listing(Base):
     # "new" (post-1981 新耐震) | "old" (pre-1981 旧耐震) | "unknown"
     earthquake_standard: Mapped[str | None] = mapped_column(String(20), nullable=True)
 
+    # Commute estimate (offline): walk-to-station + station→hub train time.
+    # None when the nearest station isn't in the commute table.
+    commute_tokyo_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    commute_shinjuku_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    commute_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     # Features (stored as JSON list of strings — raw 設備 equipment terms)
     features: Mapped[list | None] = mapped_column(JSON, nullable=True)
 

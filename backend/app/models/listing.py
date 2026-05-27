@@ -31,6 +31,9 @@ class ListingOut(BaseModel):
     car_parking: str | None = None
     foreigner_ok: bool | None = None
     earthquake_standard: str | None = None  # "new" | "old" | "unknown"
+    commute_tokyo_min: int | None = None
+    commute_shinjuku_min: int | None = None
+    commute_score: float | None = None
     features: list[str] | None
     image_url: str | None
     scraped_at: datetime

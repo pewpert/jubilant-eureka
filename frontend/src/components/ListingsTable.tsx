@@ -16,7 +16,7 @@ const SOURCE_COLORS: Record<string, string> = {
   chintai: "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300",
 };
 
-type SortKey = "rent" | "size" | "walk" | "age" | "moto";
+type SortKey = "rent" | "size" | "walk" | "age" | "moto" | "commute";
 type SortDir = "asc" | "desc";
 
 // Rank parking 3-state so the default ascending sort floats confirmed parking
@@ -36,7 +36,8 @@ function toCsv(rows: Listing[]): string {
   const headers = [
     "source", "building_name", "title", "rent", "management_fee",
     "floor_plan", "size_m2", "nearest_line", "nearest_station", "walk_minutes",
-    "building_age_years", "floor", "motorcycle_parking", "bicycle_parking",
+    "building_age_years", "floor", "commute_tokyo_min", "commute_shinjuku_min",
+    "motorcycle_parking", "bicycle_parking",
     "car_parking", "foreigner_ok", "earthquake_standard", "address", "source_url",
   ];
   const esc = (v: unknown) => {
@@ -157,6 +158,7 @@ export default function ListingsTable({ listings }: Props) {
         case "walk": return l.walk_minutes;
         case "age": return l.building_age_years;
         case "moto": return parkingRank(l.motorcycle_parking);
+        case "commute": return l.commute_score ?? null;
       }
     };
     out.sort((a, b) => {
@@ -232,6 +234,7 @@ export default function ListingsTable({ listings }: Props) {
                 <option value="walk">Walk</option>
                 <option value="age">Age</option>
                 <option value="moto">🏍 Parking</option>
+                <option value="commute">🚆 Commute</option>
               </select>
               <button
                 type="button"
@@ -328,6 +331,8 @@ export default function ListingsTable({ listings }: Props) {
               <th className="px-4 py-3 font-medium">Size</th>
               <th className="px-4 py-3 font-medium">Station</th>
               <th className="px-4 py-3 font-medium">Walk</th>
+              <th className="px-4 py-3 font-medium" title="Estimated door-to-door: walk + train to Tokyo Station">→Tokyo</th>
+              <th className="px-4 py-3 font-medium" title="Estimated door-to-door: walk + train to Shinjuku">→Shinjuku</th>
               <th className="px-4 py-3 font-medium">Age</th>
               <th className="px-4 py-3 font-medium">Floor</th>
               <th className="px-4 py-3 font-medium">Parking</th>
@@ -402,6 +407,12 @@ export default function ListingsTable({ listings }: Props) {
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap text-gray-700 dark:text-gray-300">
                   {l.walk_minutes != null ? `${l.walk_minutes} min` : "—"}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap text-gray-700 dark:text-gray-300">
+                  {l.commute_tokyo_min != null ? `${l.commute_tokyo_min} min` : "—"}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap text-gray-700 dark:text-gray-300">
+                  {l.commute_shinjuku_min != null ? `${l.commute_shinjuku_min} min` : "—"}
                 </td>
                 <td className="px-4 py-3 text-gray-700 dark:text-gray-300 whitespace-nowrap">
                   {l.building_age_years != null

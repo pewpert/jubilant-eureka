@@ -191,15 +191,45 @@ Misc covers: lock replacement, fire insurance, guarantor company fee.
 
 ### What works
 - Full Docker stack runs locally on Mac (Postgres, Redis, FastAPI, Celery worker, Playwright)
-- **Detail-page amenity enrichment (May 25 2026)**: after filtering, surviving listings'
-  detail pages are fetched (capped by `max_detail_fetches`, default 25, split across sources)
-  to extract motorcycle/bicycle/car parking (3-state: available/none/unknown), 外国人 (foreigner-OK),
-  and earthquake standard (新耐震/旧耐震, inferred from `built_year` when not stated).
-  Shared parser: `backend/app/scrapers/detail_features.py`. Suumo + Homes implement `parse_detail`;
-  Chintai falls back to the base no-op. Frontend shows a Parking column (🏍/🚲/🚗 badges),
-  a "🏍 Parking" sort option, 新耐震/旧耐震/外国人可 badges on the Building cell, and the
-  new fields in CSV export. Parking is a badge/sort, NOT a hard filter — a missing badge
-  means "not stated," not "confirmed none."
+- **Detail-page amenity enrichment (May 25 2026)**: after filtering + dedup, surviving
+  listings' detail pages are fetched to extract motorcycle/bicycle/car parking (3-state:
+  available/none/unknown), 外国人 (foreigner-OK), and earthquake standard (新耐震/旧耐震,
+  inferred from `built_year` when not stated). Shared parser: `detail_features.py`
+  (`parse_detail_features()`). All three scrapers (Suumo/Homes/Chintai) implement `parse_detail`.
+  Enrichment is **top-N by rent** — cheapest listings enriched first — capped by
+  `max_detail_fetches` (default 60, max 200), via `manager._enrich_filtered()` and
+  `base.enrich_listings()`. Frontend: Parking column (🏍/🚲/🚗 badges), "🏍 Parking" sort,
+  新耐震/旧耐震/外国人可 badges, CSV columns. Parking is badge/sort, NOT a hard filter by
+  default — a missing badge means "not stated," not "confirmed none."
+  - **Per-source reality:** for motorcycle parking, **Chintai is the best source** — its
+    detail pages actually state バイク置き場/駐輪場. Suumo detail pages usually only list
+    駐車場 (car); a Suumo "no moto" is real (verified on live pages), not a parse bug.
+- **Moto-parking filter (May 25 2026)**: `moto_parking_only` flag on `SearchCriteria`.
+  When true, `manager.py` keeps only `motorcycle_parking == "available"` AFTER enrichment
+  (parking only exists post-enrichment). Opt-in; never hides anything by default. UI: a
+  "🏍 Motorcycle parking only" toggle in `SearchForm.tsx`. Caveat: only as good as
+  enrichment coverage — a cheap-but-unenriched listing (beyond top-N) won't be matched.
+- **Commute-aware ranking (May 25 2026)**: offline, no Maps API. Per-listing estimate =
+  scraped `walk_minutes` (address→station) + station→hub train time from a curated table.
+  Table + logic: `backend/app/data/commute.py` (`STATION_TO_HUB`, `station_normalize()`,
+  `estimate_commute()`). Tokyo Station weighted 2× Shinjuku (Shinkansen priority) + a
+  per-transfer penalty. Attached in `manager.py` to `commute_tokyo_min`/`commute_shinjuku_min`/
+  `commute_score` (DB columns + `ListingOut`). UI: →Tokyo/→Shinjuku columns + "🚆 Commute"
+  sort + CSV. Unknown stations → None / "—" (no penalty). **The table is manual** — covers
+  the ~20 stations in the Suginami/Nakano search area; add entries when searching new wards.
+  Times are approximate typical times, NOT real-time, and use the nearest scraped station
+  (not exact building-address routing — that would need a Maps API, deliberately declined).
+- **Dedup (May 25 2026)**: `manager.py` drops TRUE exact-dupes (building + station + rent +
+  size + **floor**), regardless of URL — catches the same unit re-listed under different
+  agency URLs. Floor is included on purpose: same building+rent+size on different floors are
+  genuinely different units and are KEPT (verified, e.g. エントピア中野 2F vs 4F).
+- **Workflow gotchas (learned May 25 2026)**:
+  - Celery worker does NOT hot-reload. After any scraper/pipeline code change run
+    `docker compose restart worker`, else jobs run stale code (this caused Suumo to persist
+    null station/walk for a whole run). The API (uvicorn --reload) does auto-reload.
+  - No DB migration tooling. New columns require `docker compose down -v && up --build` + reseed.
+  - Run a search via the API (POST `/api/search/`) to exercise the real Celery→DB path;
+    calling `run_all_scrapers` directly does NOT persist anything.
 - **Homes.co.jp scraper confirmed working**: 117 raw listings for Suginami + Nakano, 2 pages
 - **Chintai.net scraper confirmed working**: 112 raw listings for same criteria
 - Both scrapers iterate all selected wards and dedup by URL
@@ -244,14 +274,11 @@ bugs were fixed:
 ### What needs fixing (priority order)
 1. **Chintai filter mismatch** — Chintai passes 0 listings for base case (rent 10–12万, 1LDK/1DK, Suginami+Nakano). The site returns 112 raw but all excluded by rent (103) + floor_plan (6) + size (3). The URL params `yen_from/yen_to/madori` are sent but the site may not honour them strictly for all result types. Post-filter is correctly excluding them. **This means post-filter IS working but the results are overly narrow — may need to widen criteria in testing, or the filter params need verification.**
 
-2. **Duplicate listings** (still open, reconfirmed May 25 2026) — same building appears
-   many times across all 3 sources (e.g. ラフィスタ中野本町 ×4 at ¥126k/127k/128.5k/129k,
-   Brillia中野 ×2, PASEO新中野 ×2). Two distinct causes: (a) genuine multi-unit buildings
-   where each unit is a separate listing with slightly different rent/size — arguably
-   correct to show, but noisy; (b) true dupes with identical rent+size. URL-based dedup in
-   `manager.py` doesn't collapse these because units have distinct detail URLs. A fix would
-   add a composite key (building_name + layout + rent-bucket + size) and either collapse or
-   group-by-building in the UI. Deferred per Daniel (May 25).
+2. **Duplicate listings** (PARTIALLY FIXED May 25 2026) — TRUE exact-dupes (same
+   building+station+rent+size+floor) are now collapsed in `manager.py`. What REMAINS by
+   design: genuine multi-unit buildings still show one row per unit (different floor or
+   rent/size), e.g. ラフィスタ中野本町 ×4 at slightly different rents. Daniel chose "keep
+   separate rows." A future enhancement could group-by-building in the UI ("4 units, ¥126k–129k").
 
 3. **Vercel Root Directory** — in the Vercel dashboard go to
    Settings → General → Root Directory → set to `frontend` → Save → Redeploy.
@@ -259,11 +286,13 @@ bugs were fixed:
 4. **Cloud backend** — backend only runs locally. Railway.app (~$5/mo) is the recommended
    next step for a fully public deployment.
 
-5. **DB schema changed (May 25 2026)** — the `listings` table gained 5 columns
+5. **DB schema** — the `listings` table has gained 8 columns over this session
    (`motorcycle_parking`, `bicycle_parking`, `car_parking`, `foreigner_ok`,
-   `earthquake_standard`). There's no migration tooling, so apply with a volume reset:
-   `docker compose down -v && docker compose up --build`. (Tables are auto-created on boot.)
-   Re-seed afterwards: `docker compose exec backend python seed_listings.py`.
+   `earthquake_standard`, `commute_tokyo_min`, `commute_shinjuku_min`, `commute_score`).
+   These are APPLIED in the current running stack. There's no migration tooling, so any
+   FUTURE column add requires a volume reset: `docker compose down -v && docker compose up
+   --build` (tables auto-create on boot), then re-seed:
+   `docker compose exec backend python seed_listings.py`.
 
 ### Quick test commands
 

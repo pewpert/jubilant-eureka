@@ -44,6 +44,9 @@ export interface Listing {
   car_parking?: string | null;
   foreigner_ok?: boolean | null;
   earthquake_standard?: string | null;  // "new" | "old" | "unknown"
+  commute_tokyo_min?: number | null;
+  commute_shinjuku_min?: number | null;
+  commute_score?: number | null;
   features: string[] | null;
   image_url: string | null;
   scraped_at: string;
