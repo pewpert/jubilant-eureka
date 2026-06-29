@@ -1,6 +1,6 @@
 # Tokyo Apartment Search
 
-A web application that aggregates Tokyo rental listings from Suumo, LIFULL HOME'S, and Chintai based on user-specified criteria.
+A web application that aggregates Tokyo rental listings from Suumo, LIFULL HOME'S, Chintai, and e-housing.jp based on user-specified criteria.
 
 **Live demo (frontend only):** `jubilant-eureka-rho.vercel.app`
 
@@ -12,7 +12,10 @@ A web application that aggregates Tokyo rental listings from Suumo, LIFULL HOME'
    and an optional "motorcycle parking only" toggle)
 2. Backend enqueues a Celery job
 3. Celery worker launches headless Chromium (via Playwright) and scrapes Suumo,
-   LIFULL HOME'S, and Chintai concurrently (Suumo falls back to Firecrawl when blocked)
+   LIFULL HOME'S, Chintai, and e-housing.jp concurrently. All sources share one
+   resilient fetch path (`BaseScraper.fetch_page`): live-first, Firecrawl fallback
+   when a site blocks. e-housing is Next.js SSR — its data is parsed straight from
+   the page's embedded RSC JSON, no detail-page enrichment needed.
 4. Results are filtered (rent/size/walk/age/floor-plan), **deduplicated**, and the
    surviving listings are **enriched** by fetching each detail page for parking
    (motorcycle/bicycle/car), foreigner-OK, and earthquake standard
@@ -25,10 +28,13 @@ A web application that aggregates Tokyo rental listings from Suumo, LIFULL HOME'
 
 | Feature | Implementation |
 |---|---|
-| Multi-source scraping | `backend/app/scrapers/{suumo,homes,chintai}.py`, orchestrated by `manager.py` |
-| Suumo block handling | `suumo.py` `_looks_blocked()` + live-first / per-page Firecrawl fallback (`firecrawl.py`) |
+| Multi-source scraping | `backend/app/scrapers/{suumo,homes,chintai,ehousing}.py`, orchestrated by `manager.py` |
+| Listing contract | `contract.py` `RawListing` (shape every scraper emits) + `normalize.py` (shared field parsers) |
+| Block handling (all sources) | `base.py` `fetch_page()` — live-first + per-page Firecrawl fallback; per-site `is_blocked()` hook |
+| e-housing parsing | `ehousing.py` — decodes Next.js RSC (`self.__next_f`) JSON; ward-id map; no detail enrichment |
 | Post-scrape filters | `manager.py` `run_all_scrapers()` (rent/size/walk/building_age/floor_plan) |
-| Dedup | `manager.py` — drops TRUE exact-dupes (building+station+rent+size+floor), keeps different units |
+| Dedup | `manager.py` `dedup_listings()` — exact (building+station+rent+size+floor) + cross-source fuzzy (name-independent, for e-housing's English names) |
+| DB migrations | `backend/alembic/` (baseline `0001_baseline`); auto-run on API boot via `entrypoint.sh` |
 | Detail-page enrichment | `base.py` `enrich_listings()` + per-scraper `parse_detail()`; shared parser `detail_features.py` |
 | Parking / foreigner / earthquake | `detail_features.py` `parse_detail_features()` → 3-state parking, bool foreigner, new/old EQ |
 | Top-N enrichment | `manager.py` `_enrich_filtered()` — cheapest listings enriched first, capped by `max_detail_fetches` |
@@ -113,14 +119,18 @@ jubilant-eureka/
 │   │   │   ├── search.py       # SearchCriteria (incl. enrich_details, max_detail_fetches, moto_parking_only)
 │   │   │   └── listing.py      # ListingOut, SearchJobOut, Debug models
 │   │   ├── scrapers/
-│   │   │   ├── base.py             # BaseScraper (Playwright lifecycle, retry, enrich_listings())
+│   │   │   ├── base.py             # BaseScraper: Playwright lifecycle, retry, fetch_page()
+│   │   │   │                       #   (shared live→Firecrawl block fallback + is_blocked hook)
+│   │   │   ├── contract.py         # RawListing dataclass — the listing shape every scraper emits
+│   │   │   ├── normalize.py        # Shared parsers: parse_yen/size/walk/floor/building_age
 │   │   │   ├── homes.py            # LIFULL HOME'S scraper (+ parse_detail)
 │   │   │   ├── suumo.py            # Suumo scraper (+ parse_detail, _looks_blocked, Firecrawl fallback)
 │   │   │   ├── chintai.py          # Chintai scraper (+ parse_detail)
+│   │   │   ├── ehousing.py         # e-housing.jp scraper (Next.js RSC JSON; no detail enrichment)
 │   │   │   ├── detail_features.py  # Shared detail-page parser: parking/foreigner/earthquake
 │   │   │   ├── firecrawl.py        # Firecrawl fallback + Redis block-memory/cache
 │   │   │   ├── transport.py        # parse_transport(): line/station/walk from text
-│   │   │   └── manager.py          # Concurrent scrape, filter, dedup, enrich, commute
+│   │   │   └── manager.py          # Concurrent scrape, dedup_listings(), filter, enrich, commute
 │   │   ├── tasks/
 │   │   │   ├── celery_app.py   # Celery factory
 │   │   │   └── scrape.py       # scrape_apartments Celery task
@@ -161,19 +171,23 @@ jubilant-eureka/
 # The API (uvicorn --reload) picks up changes automatically; the worker does not.
 docker compose restart worker
 
-# Full rebuild (e.g. after a DB SCHEMA change — there is no migration tooling,
-# so new columns require a volume reset). Re-seed afterwards.
-docker compose down -v && docker compose up --build
-docker compose exec backend python seed_listings.py
+# DB schema changes are managed by Alembic now (no more volume wipe).
+#   New migration:  docker compose exec backend alembic revision --autogenerate -m "msg"
+#   Apply:          docker compose exec backend alembic upgrade head   (also auto on API boot)
+# Migrations run automatically on the API container (RUN_MIGRATIONS=1). On the FIRST boot
+# against a pre-Alembic volume, the entrypoint auto-stamps the baseline then upgrades.
+
+# Run the offline test suite (parsers, normalisers, dedup — no network/DB needed)
+cd backend && PYTHONPATH=. python -m pytest tests/ -q
 
 # View worker logs (scraper activity)
 docker compose logs worker --tail=100 -f
 
-# Trigger a search via API (incl. enrichment + moto-parking-only)
+# Trigger a search via API (incl. e-housing + enrichment + moto-parking-only)
 curl -X POST http://localhost:8000/api/search/ \
   -H "Content-Type: application/json" \
   -d '{"wards":["suginami","nakano"],"rent_min":0,"rent_max":14,"size_min_m2":25,
-       "walk_minutes":10,"sources":["suumo","homes","chintai"],"max_pages":2,
+       "walk_minutes":10,"sources":["suumo","homes","chintai","ehousing"],"max_pages":2,
        "enrich_details":true,"max_detail_fetches":60,"moto_parking_only":false}'
 
 # Check status, then fetch results

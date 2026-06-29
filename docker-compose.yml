@@ -36,6 +36,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
+      # Only the API container runs Alembic migrations on boot; the worker waits.
+      RUN_MIGRATIONS: "1"
     ports:
       - "8000:8000"
     depends_on:

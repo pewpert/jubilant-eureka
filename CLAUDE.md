@@ -187,7 +187,60 @@ Misc covers: lock replacement, fire insurance, guarantor company fee.
 
 ---
 
-## Current Status (May 25 2026)
+## Current Status (Jun 29 2026)
+
+### Architecture hardening + e-housing.jp (Jun 29 2026)
+This session added a 4th source (e-housing.jp) on top of an architecture refactor that
+makes adding future sites cheap. Plan doc: `docs/ROBUSTNESS_AND_EHOUSING_PLAN.md`.
+
+- **e-housing.jp scraper** (`app/scrapers/ehousing.py`) — English-first, expat-focused
+  aggregator. It is a **Next.js SSR** site: listing data is embedded in the page HTML as
+  RSC streaming chunks (`self.__next_f.push`). We decode those chunks and read structured
+  JSON directly — **no DOM scraping / JS hydration wait** for the search page. Per-listing
+  fields (rent_amount in yen, size_sqm, layout, bed_rooms, deposit/key_money, lat/long,
+  multilingual building + station names, per-station walking distance) map straight onto our
+  listing dict. Verified: base-case search → **27 listings**, all core fields populated.
+  - **URL params** (≠ JP portals): `wards=11&wards=10` (e-housing numeric ward ids, NOT
+    Suumo codes), `price_from`/`price_to` (YEN), `area_from`/`area_to` (m²),
+    `walking_distance_to` (min), `layout=1LDK,1DK` (**comma-joined**; `[]`/repeat forms
+    reset to all), `page`. Ward-id map (`EHOUSING_WARD_IDS`) covers **16 of 23 wards** —
+    central/popular only; uncovered wards (Adachi, Edogawa, etc.) are skipped + logged.
+  - **No detail enrichment**: e-housing detail pages (`/properties/{slug}`) are
+    client-rendered (amenity values load via XHR), so parking stays "unknown" (the
+    moto-filter already treats that as "not stated"). The list page gives us everything else.
+  - **DISCOUNTED rent**: when `discounted_rent_amount` is present and lower, we use it.
+- **Shared block/fallback in BaseScraper** — Suumo's live-first→Firecrawl→block-detect loop
+  is now `BaseScraper.fetch_page()` + a per-site `is_blocked(html)` hook. Suumo/Homes/Chintai
+  all call it; each just overrides `is_blocked` for its marker (`.cassetteitem` /
+  `mod-mergeBuilding` / `cassette_item`) and parses from a string. e-housing gets resilience
+  for free. **No more per-site copies of the block logic.**
+- **Typed contract + shared normalisers** — every scraper now emits via `RawListing`
+  (`app/scrapers/contract.py`, dataclass with safe defaults + `.to_dict()`), so a scraper
+  can't emit a malformed listing. The copy-pasted `_parse_yen`/`_parse_size`/`_parse_walk`/
+  `_parse_floor`/`_parse_building_age` are unified in `app/scrapers/normalize.py`.
+- **Parse-from-string + offline tests** — all parsers take an HTML string (Playwright only
+  fetches). `backend/tests/` has `test_normalize.py`, `test_parsers.py` (real saved fixtures
+  in `tests/fixtures/`), `test_dedup.py` — **18 tests, all pass offline, no network/DB**.
+  Run: `cd backend && PYTHONPATH=. python -m pytest tests/ -q`.
+- **Cross-source fuzzy dedup** (`manager.dedup_listings`) — a 3rd dedup layer keyed on
+  `(station, rent, round(size,1), floor)` IGNORING building name, so e-housing's
+  English-named re-aggregated listings collapse against the JP portals' Japanese-named ones.
+  Guarded: only fires when station+rent+size all present; different floors stay separate;
+  every merge is logged; count surfaced as `scrape_stats.cross_source_merged`.
+- **Alembic migrations** — `backend/alembic/` with a hand-verified baseline
+  (`0001_baseline`, matches the live 42-column schema exactly). Container entrypoint
+  (`backend/entrypoint.sh`) runs `alembic upgrade head` on the API container
+  (`RUN_MIGRATIONS=1`); on a legacy DB it `stamp`s the baseline first. **New columns no
+  longer require `docker compose down -v` (which wiped all data)** — add a migration instead.
+  - **One-time on the existing volume**: the running DB was created by the old `create_all`
+    path, so on first boot after this change the entrypoint auto-stamps baseline then
+    upgrades. To do it manually: `docker compose exec backend alembic stamp 0001_baseline`.
+  - New migration: `docker compose exec backend alembic revision --autogenerate -m "msg"`,
+    review, then `alembic upgrade head` (auto on next boot).
+- **NOT YET RUN LIVE**: this session had no Docker available. All logic is unit-verified
+  against saved fixtures; the live Celery→DB path (and e-housing live fetch from the worker)
+  still needs one end-to-end run: `docker compose up --build`, then POST a base-case search
+  including `"ehousing"` in sources.
 
 ### What works
 - Full Docker stack runs locally on Mac (Postgres, Redis, FastAPI, Celery worker, Playwright)
@@ -227,7 +280,8 @@ Misc covers: lock replacement, fire insurance, guarantor company fee.
   - Celery worker does NOT hot-reload. After any scraper/pipeline code change run
     `docker compose restart worker`, else jobs run stale code (this caused Suumo to persist
     null station/walk for a whole run). The API (uvicorn --reload) does auto-reload.
-  - No DB migration tooling. New columns require `docker compose down -v && up --build` + reseed.
+  - DB migrations: Alembic (added Jun 29 2026). New columns = a new migration, NOT a volume
+    wipe. `alembic revision --autogenerate -m "msg"` → review → upgrade (auto on next boot).
   - Run a search via the API (POST `/api/search/`) to exercise the real Celery→DB path;
     calling `run_all_scrapers` directly does NOT persist anything.
 - **Homes.co.jp scraper confirmed working**: 117 raw listings for Suginami + Nakano, 2 pages
@@ -286,13 +340,15 @@ bugs were fixed:
 4. **Cloud backend** — backend only runs locally. Railway.app (~$5/mo) is the recommended
    next step for a fully public deployment.
 
-5. **DB schema** — the `listings` table has gained 8 columns over this session
-   (`motorcycle_parking`, `bicycle_parking`, `car_parking`, `foreigner_ok`,
-   `earthquake_standard`, `commute_tokyo_min`, `commute_shinjuku_min`, `commute_score`).
-   These are APPLIED in the current running stack. There's no migration tooling, so any
-   FUTURE column add requires a volume reset: `docker compose down -v && docker compose up
-   --build` (tables auto-create on boot), then re-seed:
-   `docker compose exec backend python seed_listings.py`.
+5. **DB schema** — RESOLVED Jun 29 2026. Schema is now managed by **Alembic**
+   (`backend/alembic/`). Column adds are migrations, not volume wipes. See the "Alembic
+   migrations" bullet under the Jun 29 status above for the workflow and the one-time
+   legacy-DB stamp.
+
+6. **e-housing live run** — the e-housing scraper is unit-verified against a saved fixture
+   (27 listings) but not yet exercised through the live Celery→DB path (no Docker this
+   session). First end-to-end run: `docker compose up --build`, POST a base-case search with
+   `"ehousing"` in `sources`, confirm listings persist and `cross_source_merged` is sane.
 
 ### Quick test commands
 

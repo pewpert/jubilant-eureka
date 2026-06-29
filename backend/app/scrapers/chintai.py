@@ -29,6 +29,8 @@ from bs4 import BeautifulSoup
 from app.scrapers.base import BaseScraper
 from app.scrapers.transport import parse_transport
 from app.scrapers.detail_features import parse_detail_features
+from app.scrapers.normalize import parse_yen as _parse_yen, parse_size as _parse_size
+from app.scrapers.contract import RawListing
 from app.models.search import SearchCriteria, FloorPlan
 
 logger = logging.getLogger(__name__)
@@ -48,24 +50,6 @@ FLOOR_PLAN_VALUES = {
     FloorPlan.LDK3: "3LDK",
     FloorPlan.LDK4_PLUS: "4LDK",
 }
-
-
-def _parse_yen(text: str | None) -> int | None:
-    if not text:
-        return None
-    text = text.replace(",", "").replace("\u00a0", "").strip()
-    m = re.search(r"([\d.]+)\s*万", text)
-    if m:
-        return int(float(m.group(1)) * 10000)
-    m = re.search(r"(\d+)\s*円", text)
-    return int(m.group(1)) if m else None
-
-
-def _parse_size(text: str | None) -> float | None:
-    if not text:
-        return None
-    m = re.search(r"([\d.]+)\s*m", text, re.IGNORECASE)
-    return float(m.group(1)) if m else None
 
 
 def _build_params(c: SearchCriteria, page_num: int) -> list[tuple[str, str]]:
@@ -104,8 +88,14 @@ class ChintaiScraper(BaseScraper):
         qs = "&".join(f"{k}={v}" for k, v in params)
         return f"{base}?{qs}" if qs else base
 
+    def is_blocked(self, html: str | None) -> bool:
+        """A real Chintai results page carries the cassette_item card marker."""
+        if html and "cassette_item" in html:
+            return False
+        return super().is_blocked(html)
+
     async def scrape(self) -> AsyncIterator[dict]:
-        """Override to iterate over all ward codes and dedup by URL."""
+        """Iterate over all ward codes, fetch each page resiliently, dedup by URL."""
         codes = self.criteria.ward_codes()
         if not codes:
             codes = [None]  # type: ignore[list-item]
@@ -120,27 +110,13 @@ class ChintaiScraper(BaseScraper):
                     url = self.build_search_url(page_num, ward_code)
                     logger.info("[chintai] Scraping page %d (ward=%s) → %s", page_num, ward_code, url)
 
-                    try:
-                        await self._goto_with_retry(page, url)
-                    except Exception as exc:
-                        logger.error("[chintai] Failed to load page: %s", exc)
+                    html = await self.fetch_page(page, url)
+                    if html is None:
+                        if page_num == 1 and ward_code == codes[0]:
+                            self.blocked = True
                         break
 
-                    html = await page.content()
-                    title = await page.title()
-                    logger.info("[chintai] Page title: %s | HTML length: %d", title, len(html))
-
-                    if "アクセスが集中" in html or "アクセス制限" in html or len(html) < 3000:
-                        logger.warning("[chintai] Block page detected — aborting scrape")
-                        self.blocked = True
-                        break
-
-                    import os
-                    debug_path = f"/tmp/debug_chintai_p{page_num}.html"
-                    with open(debug_path, "w", encoding="utf-8") as f:
-                        f.write(html)
-
-                    listings = await self.parse_listings_page(page)
+                    listings = self.parse_html(html)
                     logger.info("[chintai] Page %d → %d listings", page_num, len(listings))
 
                     found_new = False
@@ -154,22 +130,24 @@ class ChintaiScraper(BaseScraper):
                         found_new = True
                         yield listing
 
-                    if not listings or not found_new or not await self.has_next_page(page):
+                    if not listings or not found_new or not self._has_next_in_html(html):
                         break
-                if self.blocked:
-                    break
         finally:
             await context.close()
+
+    def _has_next_in_html(self, html: str) -> bool:
+        return "次のページ" in (html or "")
 
     async def parse_listings_page(self, page: Page) -> list[dict]:
         try:
             await page.wait_for_selector(".cassette_item", timeout=15000)
         except Exception:
             logger.warning("[chintai] .cassette_item not found")
-            return []
+        return self.parse_html(await page.content())
 
-        html = await page.content()
-        soup = BeautifulSoup(html, "lxml")
+    def parse_html(self, html: str) -> list[dict]:
+        """Pure string→listings parser (used by both live and Firecrawl paths)."""
+        soup = BeautifulSoup(html or "", "lxml")
         results = []
 
         for item in soup.select(".cassette_item"):
@@ -284,29 +262,27 @@ class ChintaiScraper(BaseScraper):
                             layout = m_fp.group(0)
                         break
 
-                    results.append({
-                        "source_url": detail_url,
-                        "title": building_title or station or "",
-                        "building_name": building_title,
-                        "rent": rent,
-                        "management_fee": mgmt_fee,
-                        "deposit": deposit,
-                        "key_money": key_money,
-                        "address": address,
-                        "ward": None,
-                        "nearest_station": station,
-                        "nearest_line": line,
-                        "walk_minutes": walk_minutes,
-                        "floor_plan": layout,
-                        "size_m2": size_m2,
-                        "floor": floor_num,
-                        "total_floors": total_floors,
-                        "building_age_years": age_years,
-                        "built_year": built_year,
-                        "building_type": None,
-                        "features": [],
-                        "image_url": None,
-                    })
+                    results.append(RawListing(
+                        source_url=detail_url,
+                        source=self.source_name,
+                        title=building_title or station or "",
+                        building_name=building_title,
+                        rent=rent,
+                        management_fee=mgmt_fee,
+                        deposit=deposit,
+                        key_money=key_money,
+                        address=address,
+                        ward=None,
+                        nearest_station=station,
+                        nearest_line=line,
+                        walk_minutes=walk_minutes,
+                        floor_plan=layout,
+                        size_m2=size_m2,
+                        floor=floor_num,
+                        total_floors=total_floors,
+                        building_age_years=age_years,
+                        built_year=built_year,
+                    ).to_dict())
 
         return results
 

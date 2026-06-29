@@ -42,6 +42,14 @@ from bs4 import BeautifulSoup
 from app.scrapers.base import BaseScraper
 from app.scrapers.transport import parse_transport
 from app.scrapers.detail_features import parse_detail_features
+from app.scrapers.normalize import (
+    parse_yen as _parse_yen,
+    parse_size as _parse_size,
+    parse_walk as _parse_walk,
+    parse_floor as _parse_floor,
+    parse_building_age as _parse_building_age,
+)
+from app.scrapers.contract import RawListing
 from app.models.search import SearchCriteria, FloorPlan, WalkMinutes
 
 logger = logging.getLogger(__name__)
@@ -96,88 +104,25 @@ def _looks_blocked(html: str | None) -> bool:
     return any(phrase in html for phrase in _BLOCK_PHRASES)
 
 
-def _parse_yen(text: str | None) -> int | None:
-    """Convert '8.5万円' or '85,000円' → int yen."""
-    if not text:
-        return None
-    text = text.strip().replace(",", "").replace("\u00a0", "")
-    # 万円 format (e.g. 8.5万円)
-    m = re.search(r"([\d.]+)\s*万円", text)
-    if m:
-        return int(float(m.group(1)) * 10000)
-    # Plain yen (e.g. 85000円)
-    m = re.search(r"(\d+)\s*円", text)
-    if m:
-        return int(m.group(1))
-    return None
-
-
-def _parse_size(text: str | None) -> float | None:
-    """Convert '35.5m²' → 35.5"""
-    if not text:
-        return None
-    m = re.search(r"([\d.]+)\s*m", text, re.IGNORECASE)
-    return float(m.group(1)) if m else None
-
-
-def _parse_walk(text: str | None) -> int | None:
-    """Convert '歩10分' or '10分' → 10"""
-    if not text:
-        return None
-    m = re.search(r"(\d+)\s*分", text)
-    return int(m.group(1)) if m else None
-
-
-def _parse_floor(text: str | None) -> tuple[int | None, int | None]:
-    """Convert '3階/10階建' → (3, 10)"""
-    if not text:
-        return None, None
-    m = re.search(r"(\d+)\s*階\s*/\s*(\d+)\s*階建", text)
-    if m:
-        return int(m.group(1)), int(m.group(2))
-    m = re.search(r"(\d+)\s*階", text)
-    if m:
-        return int(m.group(1)), None
-    return None, None
-
-
-def _parse_building_age(text: str | None) -> tuple[int | None, int | None]:
-    """Convert '築10年' or '新築' → (age_years, built_year)"""
-    if not text:
-        return None, None
-    if "新築" in text:
-        return 0, None
-    m = re.search(r"築(\d+)年", text)
-    if m:
-        return int(m.group(1)), None
-    # '2015年築'
-    m = re.search(r"(\d{4})年築", text)
-    if m:
-        year = int(m.group(1))
-        from datetime import date
-        age = date.today().year - year
-        return age, year
-    return None, None
-
-
 class SuumoScraper(BaseScraper):
     source_name = "suumo"
 
+    def is_blocked(self, html: str | None) -> bool:
+        """Delegate to Suumo's marker-aware block detector."""
+        return _looks_blocked(html)
+
     async def scrape(self):
         """
-        Warm up with a homepage visit, then scrape each page LIVE first and fall
-        back to Firecrawl only for pages where the live request is blocked.
+        Warm up with a homepage visit, then fetch each page via the shared
+        live-first→Firecrawl `fetch_page` primitive (see BaseScraper).
 
-        Why live-first (was: skip-live-when-recently-blocked): empirically Suumo's
-        live page succeeds ~50% of the time even right after a block, and the live
-        path is the more reliable of the two. The old "recently blocked → Firecrawl
-        only" shortcut would skip the live site for 6h based on one block; when the
-        Firecrawl cache was cold it then silently yielded 0 listings. We now always
-        try live, use Firecrawl per-page as a fallback, and only mark the whole
-        source blocked if BOTH fail. block-memory is kept as telemetry only.
+        The previous bespoke live/Firecrawl loop now lives in the base class so
+        every scraper shares it; Suumo only contributes its homepage warmup and
+        its marker-aware `is_blocked`. Pagination uses a string-based next check
+        so it works whether the HTML came from the live page or Firecrawl.
         """
         import asyncio as _asyncio
-        from app.scrapers.firecrawl import fetch_html, is_recently_blocked, mark_blocked
+        from app.scrapers.firecrawl import is_recently_blocked
 
         # Telemetry only — no longer changes control flow.
         if await is_recently_blocked(self.source_name):
@@ -197,49 +142,27 @@ class SuumoScraper(BaseScraper):
                 url = self.build_search_url(page_num)
                 logger.info("[suumo] Scraping page %d → %s", page_num, url)
 
-                # --- Try LIVE first ---
-                html = None
-                try:
-                    await self._goto_with_retry(page, url)
-                    html = await page.content()
-                    title = await page.title()
-                    logger.info("[suumo] Page title: %s | HTML length: %d", title, len(html or ""))
-                except Exception as exc:
-                    logger.error("[suumo] Live load failed page %d: %s", page_num, exc)
-
-                live_ok = html is not None and not _looks_blocked(html)
-
-                # --- Fall back to Firecrawl for THIS page if live was blocked ---
-                if not live_ok:
-                    logger.warning("[suumo] Live blocked/failed on page %d — trying Firecrawl fallback", page_num)
-                    await mark_blocked(self.source_name)  # telemetry
-                    fc_html = await fetch_html(url)
-                    if fc_html and not _looks_blocked(fc_html):
-                        listings = self._parse_html(fc_html)
-                        logger.info("[suumo] Firecrawl page %d → %d listings", page_num, len(listings))
-                        for listing in listings:
-                            listing["source"] = self.source_name
-                            yield listing
-                        # Firecrawl can't paginate reliably; stop after this page.
-                        break
-                    # Both live and Firecrawl failed for this page.
+                html = await self.fetch_page(page, url)
+                if html is None:
                     if page_num == 1:
                         self.blocked = True
-                    logger.warning("[suumo] Both live and Firecrawl failed on page %d — stopping", page_num)
                     break
 
-                # --- Live succeeded: parse from the rendered page ---
                 listings = self._parse_html(html)
-                logger.info("[suumo] Page %d (live) → %d listings", page_num, len(listings))
+                logger.info("[suumo] Page %d → %d listings", page_num, len(listings))
                 for listing in listings:
                     listing["source"] = self.source_name
                     yield listing
 
-                if not listings or not await self.has_next_page(page):
+                if not listings or not self._has_next_in_html(html):
                     break
         finally:
             if context is not None:
                 await context.close()
+
+    def _has_next_in_html(self, html: str) -> bool:
+        """Suumo shows a 次へ (next) link when more pages exist."""
+        return "次へ" in (html or "")
 
     def build_search_url(self, page_num: int = 1) -> str:
         c = self.criteria
@@ -388,29 +311,29 @@ class SuumoScraper(BaseScraper):
 
                 floor_num, total_floors = _parse_floor(floor_text)
 
-                results.append({
-                    "source_url": detail_url,
-                    "title": building_name or "",
-                    "building_name": building_name,
-                    "rent": _parse_yen(rent_text),
-                    "management_fee": _parse_yen(fee_text),
-                    "deposit": _parse_yen(deposit_text),
-                    "key_money": _parse_yen(key_money_text),
-                    "address": address,
-                    "ward": None,  # derived from ward code in manager
-                    "nearest_station": station,
-                    "nearest_line": line,
-                    "walk_minutes": walk,
-                    "floor_plan": floor_plan_text,
-                    "size_m2": _parse_size(size_text),
-                    "floor": floor_num,
-                    "total_floors": total_floors,
-                    "building_age_years": age_years,
-                    "built_year": built_year,
-                    "building_type": building_type,
-                    "features": [],
-                    "image_url": image_url,
-                })
+                results.append(RawListing(
+                    source_url=detail_url,
+                    source=self.source_name,
+                    title=building_name or "",
+                    building_name=building_name,
+                    rent=_parse_yen(rent_text),
+                    management_fee=_parse_yen(fee_text),
+                    deposit=_parse_yen(deposit_text),
+                    key_money=_parse_yen(key_money_text),
+                    address=address,
+                    ward=None,  # derived from ward code in manager
+                    nearest_station=station,
+                    nearest_line=line,
+                    walk_minutes=walk,
+                    floor_plan=floor_plan_text,
+                    size_m2=_parse_size(size_text),
+                    floor=floor_num,
+                    total_floors=total_floors,
+                    building_age_years=age_years,
+                    built_year=built_year,
+                    building_type=building_type,
+                    image_url=image_url,
+                ).to_dict())
 
         return results
 

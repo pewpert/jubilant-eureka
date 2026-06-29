@@ -16,6 +16,7 @@ from app.scrapers.base import BaseScraper
 from app.scrapers.suumo import SuumoScraper
 from app.scrapers.homes import HomesScraper
 from app.scrapers.chintai import ChintaiScraper
+from app.scrapers.ehousing import EhousingScraper
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ SCRAPERS: dict[Source, type[BaseScraper]] = {
     Source.SUUMO: SuumoScraper,
     Source.HOMES: HomesScraper,
     Source.CHINTAI: ChintaiScraper,
+    Source.EHOUSING: EhousingScraper,
 }
 
 ProgressCb = Callable[[str], None]
@@ -31,6 +33,7 @@ SOURCE_LABELS = {
     "homes": "homes.co.jp",
     "suumo": "suumo.jp",
     "chintai": "chintai.com",
+    "ehousing": "e-housing.jp",
 }
 
 
@@ -52,6 +55,76 @@ def _empty_stats(url: str = "") -> dict:
         "sample_excluded": [],
         "sample_near_miss": [],
     }
+
+
+def dedup_listings(per_source_results: dict[str, list[dict]]) -> tuple[list[dict], int]:
+    """
+    Merge per-source listings and remove duplicates. Pure / testable.
+
+    Three layers (see run_all_scrapers for the rationale):
+      1) URL dedup — the literal same listing scraped twice.
+      2) Exact-dupe dedup — same building + station + rent + size + floor. Catches
+         the same physical unit re-listed under different URLs. Different floors
+         are KEPT (genuinely different units).
+      3) Cross-source fuzzy dedup — same station + rent + size + floor, ignoring
+         the building name. Collapses e-housing's ENGLISH-named re-aggregated
+         listings against the JP portals' Japanese-named ones. Guarded to fire
+         only when station + rent + size are all present. Different floors stay
+         separate. Returns the fuzzy-merge count for telemetry.
+
+    Returns (unique_listings, cross_source_merged_count).
+    """
+    seen_urls: set[str] = set()
+    seen_exact: set[tuple] = set()
+    seen_fuzzy: dict[tuple, str] = {}
+    fuzzy_merged = 0
+    unique: list[dict] = []
+
+    for source, listings in per_source_results.items():
+        for listing in listings:
+            url = listing.get("source_url", "") or ""
+            if url:
+                if url in seen_urls:
+                    continue
+                seen_urls.add(url)
+
+            station = (listing.get("nearest_station") or "").strip()
+            rent = listing.get("rent")
+            size = listing.get("size_m2")
+            floor_key = (listing.get("floor") if listing.get("floor") is not None
+                         else listing.get("floor_plan"))
+
+            exact = (
+                (listing.get("building_name") or "").strip(),
+                station,
+                rent,
+                size,
+                floor_key,
+            )
+            if not url and exact == ("", "", None, None, None):
+                continue
+            if exact in seen_exact:
+                continue
+
+            fuzzy = None
+            if station and rent is not None and size is not None:
+                fuzzy = (station, rent, round(float(size), 1), floor_key)
+                if fuzzy in seen_fuzzy:
+                    fuzzy_merged += 1
+                    logger.info(
+                        "[dedup] cross-source merge: %s (%s) ≈ existing %s — "
+                        "station=%s rent=%s size=%s floor=%s",
+                        listing.get("building_name"), source, seen_fuzzy[fuzzy],
+                        station, rent, size, floor_key,
+                    )
+                    continue
+
+            seen_exact.add(exact)
+            if fuzzy is not None:
+                seen_fuzzy[fuzzy] = source
+            unique.append(listing)
+
+    return unique, fuzzy_merged
 
 
 async def _run_single_scraper(
@@ -119,44 +192,11 @@ async def run_all_scrapers(
 
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Merge all results and dedup across sources.
-    #
-    # Two layers:
-    #  1) URL dedup — drop the literal same listing scraped twice.
-    #  2) TRUE exact-dupe dedup — same building + station + rent + size + floor.
-    #     This catches the same physical unit re-listed under different URLs
-    #     (common when multiple agencies post it). We DELIBERATELY include floor:
-    #     same building+rent+size on DIFFERENT floors are genuinely different
-    #     units and must be kept (verified against real data — e.g. エントピア中野
-    #     2F vs 4F). Listings with no floor fall back to floor_plan so we don't
-    #     over-merge when floor is unknown.
-    seen_urls: set[str] = set()
-    seen_exact: set[tuple] = set()
-    unique: list[dict] = []
+    # Set raw counts, then merge + dedup across sources (pure function).
     for source, listings in per_source_results.items():
         per_source_stats[source]["raw_count"] = len(listings)
-        for listing in listings:
-            url = listing.get("source_url", "") or ""
-            if url:
-                if url in seen_urls:
-                    continue
-                seen_urls.add(url)
 
-            exact = (
-                (listing.get("building_name") or "").strip(),
-                (listing.get("nearest_station") or "").strip(),
-                listing.get("rent"),
-                listing.get("size_m2"),
-                listing.get("floor") if listing.get("floor") is not None
-                    else listing.get("floor_plan"),
-            )
-            # If we have nothing identifying at all (and no URL), drop it.
-            if not url and exact == ("", "", None, None, None):
-                continue
-            if exact in seen_exact:
-                continue
-            seen_exact.add(exact)
-            unique.append(listing)
+    unique, fuzzy_merged = dedup_listings(per_source_results)
 
     # Build post-scrape filter thresholds
     rent_max_yen = int(criteria.rent_max * 10000) if criteria.rent_max < 9999 else None
@@ -266,6 +306,7 @@ async def run_all_scrapers(
         "total_passed": len(filtered),
         "dominant_filter": dominant,
         "moto_filtered_out": moto_filtered_out,
+        "cross_source_merged": fuzzy_merged,
     }
 
     logger.info(

@@ -190,6 +190,98 @@ class BaseScraper(ABC):
         """
         ...
 
+    # ------------------------------------------------------------------ #
+    # Shared resilience primitive: block detection + Firecrawl fallback    #
+    # ------------------------------------------------------------------ #
+    #
+    # Previously each scraper reinvented this — Suumo had a good live-first →
+    # Firecrawl → _looks_blocked loop, while Homes/Chintai had weaker inline
+    # `len(html) < 3000` checks with site-specific phrases. That meant a 4th
+    # site (e-housing) had to invent a 4th variant. These two hooks centralise
+    # it: a scraper overrides `is_blocked()` for its site's block signature and
+    # gets the live→Firecrawl fallback + telemetry for free via `fetch_page()`.
+
+    # Block phrases shared across the Japanese portals. Sites can extend via
+    # their own is_blocked() override.
+    _BLOCK_PHRASES: tuple[str, ...] = (
+        "アクセスが集中",
+        "アクセス制限",
+        "アクセス集中に関するお詫び",
+        "ページを表示できません",
+    )
+    # A real results page should be larger than this; smaller usually = block/error.
+    _MIN_RESULTS_BYTES: int = 3000
+
+    def is_blocked(self, html: str | None) -> bool:
+        """
+        True if `html` is a block / rate-limit / error page rather than results.
+
+        Default heuristic: missing/short HTML, or a known block phrase present.
+        Scrapers with a positive results marker (e.g. Suumo's `.cassetteitem`)
+        should override to check for that first — it avoids false positives when
+        a real page happens to contain a block phrase in a help link.
+        """
+        if not html:
+            return True
+        if len(html) < self._MIN_RESULTS_BYTES:
+            return True
+        return any(p in html for p in self._BLOCK_PHRASES)
+
+    async def fetch_page(self, page: Page, url: str) -> str | None:
+        """
+        Fetch one search URL resiliently and return its HTML (or None).
+
+        Strategy (shared by all scrapers):
+          1. Try the LIVE site first (Playwright). Empirically the live path is
+             the most reliable even right after a block.
+          2. If the live HTML is blocked/failed, fall back to Firecrawl for THIS
+             url (rendered via residential IPs on Firecrawl's infra).
+          3. Record block telemetry (Redis) but NEVER let it skip the live
+             attempt — a stale block flag must not silently zero out results.
+
+        Returns None only when BOTH live and Firecrawl fail/are blocked; the
+        caller should then mark the source blocked and stop paginating.
+        """
+        # Lazy import: firecrawl pulls redis; keep base import-light for tests.
+        from app.scrapers.firecrawl import fetch_html, mark_blocked
+
+        html: str | None = None
+        try:
+            await self._goto_with_retry(page, url)
+            html = await page.content()
+            logger.info("[%s] Live fetch %s → %d bytes", self.source_name, url, len(html or ""))
+        except Exception as exc:
+            logger.error("[%s] Live load failed for %s: %s", self.source_name, url, exc)
+
+        # Snapshot for debugging regardless of outcome.
+        self._snapshot(html, url)
+
+        if html is not None and not self.is_blocked(html):
+            return html
+
+        # Live blocked/failed — try Firecrawl for this page.
+        logger.warning("[%s] Live blocked/failed for %s — trying Firecrawl", self.source_name, url)
+        await mark_blocked(self.source_name)  # telemetry only
+        fc_html = await fetch_html(url)
+        if fc_html and not self.is_blocked(fc_html):
+            logger.info("[%s] Firecrawl recovered %s → %d bytes", self.source_name, url, len(fc_html))
+            return fc_html
+
+        logger.warning("[%s] Both live and Firecrawl failed for %s", self.source_name, url)
+        return None
+
+    def _snapshot(self, html: str | None, url: str) -> None:
+        """Write an HTML snapshot to /tmp for inspection. Best-effort, never raises."""
+        if not html:
+            return
+        try:
+            safe = self.source_name
+            path = f"/tmp/debug_{safe}.html"
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(html)
+        except Exception:
+            pass
+
     @abstractmethod
     async def has_next_page(self, page: Page) -> bool:
         """Return True if there is a next page of results."""

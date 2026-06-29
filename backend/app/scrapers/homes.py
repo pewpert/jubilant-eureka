@@ -43,6 +43,8 @@ from bs4 import BeautifulSoup
 from app.scrapers.base import BaseScraper
 from app.scrapers.transport import parse_transport
 from app.scrapers.detail_features import parse_detail_features
+from app.scrapers.normalize import parse_yen as _parse_yen, parse_size as _parse_size, parse_walk as _parse_walk
+from app.scrapers.contract import RawListing
 from app.models.search import SearchCriteria, FloorPlan
 
 logger = logging.getLogger(__name__)
@@ -87,33 +89,6 @@ KNOWN_STATION_CODES: dict[str, str] = {
 }
 
 
-def _parse_yen(text: str | None) -> int | None:
-    if not text:
-        return None
-    text = text.strip().replace(",", "")
-    m = re.search(r"([\d.]+)\s*万", text)
-    if m:
-        return int(float(m.group(1)) * 10000)
-    m = re.search(r"(\d+)\s*円", text)
-    if m:
-        return int(m.group(1))
-    return None
-
-
-def _parse_size(text: str | None) -> float | None:
-    if not text:
-        return None
-    m = re.search(r"([\d.]+)\s*m", text, re.IGNORECASE)
-    return float(m.group(1)) if m else None
-
-
-def _parse_walk(text: str | None) -> int | None:
-    if not text:
-        return None
-    m = re.search(r"(\d+)\s*分", text)
-    return int(m.group(1)) if m else None
-
-
 class HomesScraper(BaseScraper):
     source_name = "homes"
 
@@ -146,8 +121,14 @@ class HomesScraper(BaseScraper):
         base = f"{HOMES_BASE}{path}"
         return f"{base}?{qs}" if qs else base
 
+    def is_blocked(self, html: str | None) -> bool:
+        """A real Homes results page carries the merge-building card marker."""
+        if html and "mod-mergeBuilding" in html:
+            return False
+        return super().is_blocked(html)
+
     async def scrape(self):
-        """Override to iterate over all selected wards and dedup by URL."""
+        """Iterate over all selected wards, fetch each page resiliently, dedup by URL."""
         wards = self.criteria.wards if self.criteria.wards else [None]  # type: ignore[list-item]
 
         seen_urls: set[str] = set()
@@ -160,26 +141,13 @@ class HomesScraper(BaseScraper):
                     url = self._build_url_for_ward(ward_slug, page_num)
                     logger.info("[homes] Scraping page %d (ward=%s) → %s", page_num, ward_slug, url)
 
-                    try:
-                        await self._goto_with_retry(page, url)
-                    except Exception as exc:
-                        logger.error("[homes] Failed to load page: %s", exc)
+                    html = await self.fetch_page(page, url)
+                    if html is None:
+                        if page_num == 1 and ward_slug == wards[0]:
+                            self.blocked = True
                         break
 
-                    html = await page.content()
-                    title = await page.title()
-                    logger.info("[homes] Page title: %s | HTML length: %d", title, len(html))
-
-                    if "アクセスが集中" in html or "robot" in title.lower() or len(html) < 3000:
-                        logger.warning("[homes] Block page detected — aborting scrape")
-                        self.blocked = True
-                        break
-
-                    import os as _os
-                    with open(f"/tmp/debug_homes_p{page_num}.html", "w", encoding="utf-8") as f:
-                        f.write(html)
-
-                    listings = await self.parse_listings_page(page)
+                    listings = self.parse_html(html)
                     logger.info("[homes] Page %d → %d listings", page_num, len(listings))
 
                     found_new = False
@@ -193,12 +161,14 @@ class HomesScraper(BaseScraper):
                         found_new = True
                         yield listing
 
-                    if not listings or not found_new or not await self.has_next_page(page):
+                    if not listings or not found_new or not self._has_next_in_html(html):
                         break
-                if self.blocked:
-                    break
         finally:
             await context.close()
+
+    def _has_next_in_html(self, html: str) -> bool:
+        """String-based next-page check (works for live + Firecrawl HTML)."""
+        return "次のページ" in (html or "")
 
     def build_search_url(self, page_num: int = 1) -> str:
         """Return URL for first ward (used by manager for stats URL capture)."""
@@ -230,26 +200,26 @@ class HomesScraper(BaseScraper):
         return self._build_url_for_ward(ward_slug, page_num)
 
     async def parse_listings_page(self, page: Page) -> list[dict]:
-        # Main listing cards: div.mod-mergeBuilding--rent--photo
+        """Wait for cards to hydrate, then parse from the rendered HTML string."""
         try:
             await page.wait_for_selector("div.mod-mergeBuilding--rent--photo", timeout=20000)
         except Exception:
-            html_preview = await page.content()
-            title = await page.title()
-            logger.warning("[homes] No cards found. title=%r html_len=%d", title, len(html_preview))
-            soup_dbg = BeautifulSoup(html_preview, "lxml")
+            logger.warning("[homes] No cards found after wait")
+        return self.parse_html(await page.content())
+
+    def parse_html(self, html: str) -> list[dict]:
+        """Pure string→listings parser (used by both live and Firecrawl paths)."""
+        soup = BeautifulSoup(html or "", "lxml")
+        cards = soup.select("div.mod-mergeBuilding--rent--photo")
+        if not cards:
             all_cls: set[str] = set()
-            for tag in soup_dbg.find_all(class_=True):
+            for tag in soup.find_all(class_=True):
                 for c in tag.get("class", []):
                     all_cls.add(c)
             kw = ["list", "item", "card", "cassette", "bukken", "building", "merge", "prg-"]
             hits = sorted(c for c in all_cls if any(k in c.lower() for k in kw))[:30]
-            logger.warning("[homes] Classes on page: %s", hits)
+            logger.warning("[homes] No cards in HTML (len=%d). Candidate classes: %s", len(html or ""), hits)
             return []
-
-        html = await page.content()
-        soup = BeautifulSoup(html, "lxml")
-        cards = soup.select("div.mod-mergeBuilding--rent--photo")
         logger.info("[homes] Found %d building cards", len(cards))
 
         results = []
@@ -337,29 +307,26 @@ class HomesScraper(BaseScraper):
                 if not rent and not floor_plan:
                     continue
 
-                results.append({
-                    "source_url": detail_url,
-                    "title": building_name or floor_plan or "",
-                    "building_name": building_name,
-                    "rent": rent,
-                    "management_fee": mgmt_fee,
-                    "deposit": deposit,
-                    "key_money": key_money,
-                    "address": address,
-                    "ward": None,
-                    "nearest_station": station,
-                    "nearest_line": line,
-                    "walk_minutes": walk,
-                    "floor_plan": floor_plan,
-                    "size_m2": size_m2,
-                    "floor": floor_num,
-                    "total_floors": None,
-                    "building_age_years": age_years,
-                    "built_year": None,
-                    "building_type": None,
-                    "features": [],
-                    "image_url": image_url,
-                })
+                results.append(RawListing(
+                    source_url=detail_url,
+                    source=self.source_name,
+                    title=building_name or floor_plan or "",
+                    building_name=building_name,
+                    rent=rent,
+                    management_fee=mgmt_fee,
+                    deposit=deposit,
+                    key_money=key_money,
+                    address=address,
+                    ward=None,
+                    nearest_station=station,
+                    nearest_line=line,
+                    walk_minutes=walk,
+                    floor_plan=floor_plan,
+                    size_m2=size_m2,
+                    floor=floor_num,
+                    building_age_years=age_years,
+                    image_url=image_url,
+                ).to_dict())
 
         return results
 

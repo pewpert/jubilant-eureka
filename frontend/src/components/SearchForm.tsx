@@ -36,6 +36,7 @@ const SOURCES = [
   { value: "suumo", label: "Suumo", hint: "paid fallback" },
   { value: "homes", label: "Homes" },
   { value: "chintai", label: "Chintai" },
+  { value: "ehousing", label: "e-Housing", hint: "English / expat" },
 ];
 
 interface Props {
@@ -57,7 +58,7 @@ export default function SearchForm({ onSubmit, loading }: Props) {
   const [floorPlans, setFloorPlans] = useState<string[]>([]);
   const [walkMinutes, setWalkMinutes] = useState(9999);
   const [buildingAge, setBuildingAge] = useState(9999);
-  const [sources, setSources] = useState(["suumo", "homes", "chintai"]);
+  const [sources, setSources] = useState(["suumo", "homes", "chintai", "ehousing"]);
   const [maxPages, setMaxPages] = useState(2);
   const [motoOnly, setMotoOnly] = useState(false);
 

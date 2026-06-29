@@ -57,6 +57,7 @@ class Source(str, Enum):
     SUUMO = "suumo"
     HOMES = "homes"
     CHINTAI = "chintai"
+    EHOUSING = "ehousing"
 
 
 class SearchCriteria(BaseModel):

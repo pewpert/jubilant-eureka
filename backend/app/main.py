@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,7 +10,12 @@ from app.api.routes import search, listings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await create_tables()
+    # Schema management is owned by Alembic (run in the container entrypoint when
+    # RUN_MIGRATIONS=1). When migrations are NOT enabled — e.g. running the API
+    # directly outside Docker for local dev — fall back to create_all so the app
+    # still boots against a fresh DB.
+    if os.environ.get("RUN_MIGRATIONS", "0") != "1":
+        await create_tables()
     yield
 
 

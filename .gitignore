@@ -11,6 +11,7 @@ dist/
 # Node
 node_modules/
 .next/
+*.tsbuildinfo
 
 # Docker volumes / local data
 postgres_data/

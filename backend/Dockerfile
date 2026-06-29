@@ -20,4 +20,7 @@ RUN playwright install chromium
 
 COPY . .
 
+RUN chmod +x /app/entrypoint.sh
+ENTRYPOINT ["/app/entrypoint.sh"]
+
 EXPOSE 8000
