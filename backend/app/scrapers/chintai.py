@@ -135,16 +135,6 @@ class ChintaiScraper(BaseScraper):
         finally:
             await context.close()
 
-    def _has_next_in_html(self, html: str) -> bool:
-        return "次のページ" in (html or "")
-
-    async def parse_listings_page(self, page: Page) -> list[dict]:
-        try:
-            await page.wait_for_selector(".cassette_item", timeout=15000)
-        except Exception:
-            logger.warning("[chintai] .cassette_item not found")
-        return self.parse_html(await page.content())
-
     def parse_html(self, html: str) -> list[dict]:
         """Pure string→listings parser (used by both live and Firecrawl paths)."""
         soup = BeautifulSoup(html or "", "lxml")
@@ -285,18 +275,6 @@ class ChintaiScraper(BaseScraper):
                     ).to_dict())
 
         return results
-
-    async def has_next_page(self, page: Page) -> bool:
-        # Chintai uses a next page link with class pagination__next or contains 次のページ
-        next_btn = await page.query_selector(".pagination__next, a.next, a[rel='next']")
-        if next_btn:
-            return True
-        # Fallback: look for text link
-        try:
-            await page.wait_for_selector("text=次のページ", timeout=1000)
-            return True
-        except Exception:
-            return False
 
     async def parse_detail(self, page: Page, url: str, built_year: int | None = None) -> dict:
         """Fetch a listing detail page and extract parking / amenity flags."""

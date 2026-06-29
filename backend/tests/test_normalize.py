@@ -3,7 +3,6 @@ from datetime import date
 
 from app.scrapers.normalize import (
     parse_yen, parse_size, parse_walk, parse_floor, parse_building_age,
-    built_year_from_age,
 )
 
 
@@ -48,10 +47,3 @@ def test_parse_building_age():
     assert parse_building_age("2015年築") == (y - 2015, 2015)
     assert parse_building_age("2015年") == (y - 2015, 2015)
     assert parse_building_age(None) == (None, None)
-
-
-def test_built_year_from_age():
-    y = date.today().year
-    assert built_year_from_age(10) == y - 10
-    assert built_year_from_age(0) == y
-    assert built_year_from_age(None) is None

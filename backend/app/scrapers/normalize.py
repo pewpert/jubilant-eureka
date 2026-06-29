@@ -77,10 +77,3 @@ def parse_building_age(text: str | None) -> tuple[int | None, int | None]:
     if m:
         return int(m.group(1)), None
     return None, None
-
-
-def built_year_from_age(age_years: int | None) -> int | None:
-    """Approximate build year from age. Used when only age is known."""
-    if age_years is None:
-        return None
-    return date.today().year - age_years

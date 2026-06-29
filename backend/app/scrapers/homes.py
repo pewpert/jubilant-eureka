@@ -166,10 +166,6 @@ class HomesScraper(BaseScraper):
         finally:
             await context.close()
 
-    def _has_next_in_html(self, html: str) -> bool:
-        """String-based next-page check (works for live + Firecrawl HTML)."""
-        return "次のページ" in (html or "")
-
     def build_search_url(self, page_num: int = 1) -> str:
         """Return URL for first ward (used by manager for stats URL capture)."""
         ward_slug = self.criteria.wards[0] if self.criteria.wards else None
@@ -198,14 +194,6 @@ class HomesScraper(BaseScraper):
                     base = f"{HOMES_BASE}{path}"
                     return f"{base}?{qs}" if qs else base
         return self._build_url_for_ward(ward_slug, page_num)
-
-    async def parse_listings_page(self, page: Page) -> list[dict]:
-        """Wait for cards to hydrate, then parse from the rendered HTML string."""
-        try:
-            await page.wait_for_selector("div.mod-mergeBuilding--rent--photo", timeout=20000)
-        except Exception:
-            logger.warning("[homes] No cards found after wait")
-        return self.parse_html(await page.content())
 
     def parse_html(self, html: str) -> list[dict]:
         """Pure string→listings parser (used by both live and Firecrawl paths)."""
@@ -329,15 +317,6 @@ class HomesScraper(BaseScraper):
                 ).to_dict())
 
         return results
-
-    async def has_next_page(self, page: Page) -> bool:
-        next_btn = await page.query_selector(
-            "a:has-text('次のページ'), "
-            ".pagination__next:not(.is-disabled), "
-            "[class*='pagination'] a:has-text('次'), "
-            "a[class*='next']:not([class*='disabled'])"
-        )
-        return next_btn is not None
 
     async def parse_detail(self, page: Page, url: str, built_year: int | None = None) -> dict:
         """Fetch a listing detail page and extract parking / amenity flags."""

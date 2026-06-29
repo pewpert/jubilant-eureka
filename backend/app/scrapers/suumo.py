@@ -201,23 +201,6 @@ class SuumoScraper(BaseScraper):
         qs = "&".join(f"{k}={v}" for k, v in params)
         return f"{SUUMO_BASE}?{qs}"
 
-    async def parse_listings_page(self, page: Page) -> list[dict]:
-        """
-        Parse Suumo search results.
-        Suumo groups units by building — each .cassetteitem div represents
-        one building. Inside, .cassetteitem_other table rows are individual units.
-        We flatten them: one dict per unit.
-        """
-        # Wait for listings to appear (or bail if blocked/CAPTCHA)
-        try:
-            await page.wait_for_selector(".cassetteitem", timeout=15000)
-        except Exception:
-            logger.warning("[suumo] .cassetteitem not found — possibly blocked or no results")
-            return []
-
-        html = await page.content()
-        return self._parse_html(html)
-
     def _parse_html(self, html: str) -> list[dict]:
         """Parse raw Suumo HTML (used by both Playwright path and Firecrawl fallback)."""
         soup = BeautifulSoup(html, "lxml")
@@ -336,11 +319,6 @@ class SuumoScraper(BaseScraper):
                 ).to_dict())
 
         return results
-
-    async def has_next_page(self, page: Page) -> bool:
-        # Suumo shows a 次へ (next) button when there are more pages
-        next_btn = await page.query_selector("a.pagination-parts:has-text('次へ')")
-        return next_btn is not None
 
     async def parse_detail(self, page: Page, url: str, built_year: int | None = None) -> dict:
         """Fetch a listing detail page and extract parking / amenity flags."""

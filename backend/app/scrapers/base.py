@@ -20,6 +20,7 @@ Why not Selenium?
     removes most of the explicit sleep() calls Selenium requires.
 """
 
+import os
 import asyncio
 import random
 import logging
@@ -183,11 +184,9 @@ class BaseScraper(ABC):
         ...
 
     @abstractmethod
-    async def parse_listings_page(self, page: Page) -> list[dict]:
-        """
-        Parse the current search results page.
-        Return a list of raw listing dicts (pre-normalisation).
-        """
+    async def scrape(self) -> AsyncIterator[dict]:
+        """Yield raw listing dicts. Each scraper drives its own paginated loop
+        over fetch_page() + parse_html()."""
         ...
 
     # ------------------------------------------------------------------ #
@@ -271,21 +270,21 @@ class BaseScraper(ABC):
         return None
 
     def _snapshot(self, html: str | None, url: str) -> None:
-        """Write an HTML snapshot to /tmp for inspection. Best-effort, never raises."""
-        if not html:
+        """Write an HTML snapshot to /tmp for inspection when DEBUG_SNAPSHOTS=1.
+        Off by default; opt in when diagnosing a scraper. Never raises."""
+        if not html or os.environ.get("DEBUG_SNAPSHOTS") != "1":
             return
         try:
-            safe = self.source_name
-            path = f"/tmp/debug_{safe}.html"
-            with open(path, "w", encoding="utf-8") as f:
+            with open(f"/tmp/debug_{self.source_name}.html", "w", encoding="utf-8") as f:
                 f.write(html)
         except Exception:
             pass
 
-    @abstractmethod
-    async def has_next_page(self, page: Page) -> bool:
-        """Return True if there is a next page of results."""
-        ...
+    @staticmethod
+    def _has_next_in_html(html: str) -> bool:
+        """True if a 'next page' link is present. The JP portals use 次のページ;
+        Suumo uses 次へ and overrides this."""
+        return "次のページ" in (html or "")
 
     async def parse_detail(self, page: Page, url: str, built_year: int | None = None) -> dict:
         """
@@ -337,50 +336,3 @@ class BaseScraper(ABC):
         finally:
             await context.close()
 
-    # ------------------------------------------------------------------ #
-    # Main scrape loop — shared by all subclasses                         #
-    # ------------------------------------------------------------------ #
-
-    async def scrape(self) -> AsyncIterator[dict]:
-        """
-        Yield raw listing dicts one by one.
-        Caller is responsible for normalising and persisting them.
-        """
-        context = await self._new_context()
-        page = await self._new_page(context)
-
-        try:
-            for page_num in range(1, self.criteria.max_pages + 1):
-                url = self.build_search_url(page_num)
-                logger.info("[%s] Scraping page %d → %s", self.source_name, page_num, url)
-
-                try:
-                    await self._goto_with_retry(page, url)
-                except Exception as exc:
-                    logger.error("[%s] Failed to load page %d: %s", self.source_name, page_num, exc)
-                    break
-
-                # Dump HTML for debugging — shows exactly what the site returned
-                html = await page.content()
-                title = await page.title()
-                logger.info("[%s] Page title: %s | HTML length: %d chars", self.source_name, title, len(html))
-
-                # Write HTML snapshot to /tmp for inspection
-                import os
-                debug_path = f"/tmp/debug_{self.source_name}_p{page_num}.html"
-                with open(debug_path, "w", encoding="utf-8") as f:
-                    f.write(html)
-                logger.info("[%s] HTML snapshot saved → %s", self.source_name, debug_path)
-
-                listings = await self.parse_listings_page(page)
-                logger.info("[%s] Page %d → %d listings", self.source_name, page_num, len(listings))
-
-                for listing in listings:
-                    listing["source"] = self.source_name
-                    yield listing
-
-                if not listings or not await self.has_next_page(page):
-                    break
-
-        finally:
-            await context.close()

@@ -305,10 +305,6 @@ class EhousingScraper(BaseScraper):
     # Parsing (pure — testable from a string)                              #
     # ------------------------------------------------------------------ #
 
-    async def parse_listings_page(self, page: Page) -> list[dict]:
-        """Abstract-contract impl: parse from the rendered HTML string."""
-        return self.parse_html(await page.content())
-
     def parse_html(self, html: str) -> list[dict]:
         listings, _ = self._parse_with_meta(html)
         return listings
@@ -373,10 +369,6 @@ class EhousingScraper(BaseScraper):
             building_type=None,
             image_url=o.get("featured_image_url"),
         ).to_dict()
-
-    async def has_next_page(self, page: Page) -> bool:
-        """Pagination is decided from the embedded meta in _parse_with_meta."""
-        return False
 
 
 def _as_int(v) -> int | None:
