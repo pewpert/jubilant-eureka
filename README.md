@@ -33,7 +33,7 @@ A web application that aggregates Tokyo rental listings from Suumo, LIFULL HOME'
 | Block handling (all sources) | `base.py` `fetch_page()` — live-first + per-page Firecrawl fallback; per-site `is_blocked()` hook |
 | e-housing parsing | `ehousing.py` — decodes Next.js RSC (`self.__next_f`) JSON; ward-id map; no detail enrichment |
 | Post-scrape filters | `manager.py` `run_all_scrapers()` (rent/size/walk/building_age/floor_plan) |
-| Dedup | `manager.py` `dedup_listings()` — exact (building+station+rent+size+floor) + cross-source fuzzy (name-independent, for e-housing's English names) |
+| Dedup | `manager.py` `dedup_listings()` — URL + exact (building+station+rent+size+floor). Keeps genuinely different units. |
 | DB migrations | `backend/alembic/` (baseline `0001_baseline`); auto-run on API boot via `entrypoint.sh` |
 | Detail-page enrichment | `base.py` `enrich_listings()` + per-scraper `parse_detail()`; shared parser `detail_features.py` |
 | Parking / foreigner / earthquake | `detail_features.py` `parse_detail_features()` → 3-state parking, bool foreigner, new/old EQ |

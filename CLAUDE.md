@@ -187,9 +187,9 @@ Misc covers: lock replacement, fire insurance, guarantor company fee.
 
 ---
 
-## Current Status (Jun 29 2026)
+## Current Status (Jun 30 2026)
 
-### Architecture hardening + e-housing.jp (Jun 29 2026)
+### Architecture hardening + e-housing.jp (Jun 29–30 2026)
 This session added a 4th source (e-housing.jp) on top of an architecture refactor that
 makes adding future sites cheap. Plan doc: `docs/ROBUSTNESS_AND_EHOUSING_PLAN.md`.
 
@@ -222,11 +222,15 @@ makes adding future sites cheap. Plan doc: `docs/ROBUSTNESS_AND_EHOUSING_PLAN.md
   fetches). `backend/tests/` has `test_normalize.py`, `test_parsers.py` (real saved fixtures
   in `tests/fixtures/`), `test_dedup.py` — **18 tests, all pass offline, no network/DB**.
   Run: `cd backend && PYTHONPATH=. python -m pytest tests/ -q`.
-- **Cross-source fuzzy dedup** (`manager.dedup_listings`) — a 3rd dedup layer keyed on
-  `(station, rent, round(size,1), floor)` IGNORING building name, so e-housing's
-  English-named re-aggregated listings collapse against the JP portals' Japanese-named ones.
-  Guarded: only fires when station+rent+size all present; different floors stay separate;
-  every merge is logged; count surfaced as `scrape_stats.cross_source_merged`.
+- **Cross-source fuzzy dedup — BUILT, THEN REMOVED (Jun 30).** A 3rd dedup layer keyed on
+  `(station, rent, round(size,1), floor)` ignoring building name was added to collapse
+  e-housing's English names against the JP portals. The live run killed it: it merged **0**
+  of its intended targets (e-housing emits `中野`/discounted yen; the JP portals emit `中野駅`/
+  list rent, so the key never matched) while falsely collapsing **43 distinct units** that
+  shared those 4 fields. `dedup_listings` is back to 2 layers (URL + exact incl. building
+  name). Same query went **76 → 98 listings**. Cross-language dedup needs **coordinates** —
+  add it back keyed on lat/long if real duplicates show up (e-housing already captures
+  lat/long for exactly this).
 - **Alembic migrations** — `backend/alembic/` with a hand-verified baseline
   (`0001_baseline`, matches the live 42-column schema exactly). Container entrypoint
   (`backend/entrypoint.sh`) runs `alembic upgrade head` on the API container
@@ -237,10 +241,12 @@ makes adding future sites cheap. Plan doc: `docs/ROBUSTNESS_AND_EHOUSING_PLAN.md
     upgrades. To do it manually: `docker compose exec backend alembic stamp 0001_baseline`.
   - New migration: `docker compose exec backend alembic revision --autogenerate -m "msg"`,
     review, then `alembic upgrade head` (auto on next boot).
-- **NOT YET RUN LIVE**: this session had no Docker available. All logic is unit-verified
-  against saved fixtures; the live Celery→DB path (and e-housing live fetch from the worker)
-  still needs one end-to-end run: `docker compose up --build`, then POST a base-case search
-  including `"ehousing"` in sources.
+- **VERIFIED LIVE (Jun 30)**: full stack up, base-case search run through the real Celery→DB
+  path. e-housing alone: **27 raw → 23 passed, persisted** (4 excluded by rent, all correct).
+  All 4 sources together: **98 listings**, none blocked, all persisted. The Alembic entrypoint
+  auto-stamped the legacy DB and upgraded on first boot. One infra fix landed during the run:
+  `entrypoint.sh` needed the executable bit on the **host** file (the `./backend:/app` volume
+  mount overlays the image's `chmod +x` at runtime) — `chmod +x` + `git update-index --chmod=+x`.
 
 ### What works
 - Full Docker stack runs locally on Mac (Postgres, Redis, FastAPI, Celery worker, Playwright)
@@ -345,10 +351,9 @@ bugs were fixed:
    migrations" bullet under the Jun 29 status above for the workflow and the one-time
    legacy-DB stamp.
 
-6. **e-housing live run** — the e-housing scraper is unit-verified against a saved fixture
-   (27 listings) but not yet exercised through the live Celery→DB path (no Docker this
-   session). First end-to-end run: `docker compose up --build`, POST a base-case search with
-   `"ehousing"` in `sources`, confirm listings persist and `cross_source_merged` is sane.
+6. **e-housing live run** — DONE Jun 30. Verified end-to-end through the real Celery→DB path
+   (27 raw → 23 passed alone; 98 across all 4 sources). See "VERIFIED LIVE" under the Jun 30
+   status. The fuzzy-dedup over-merge it exposed has been removed.
 
 ### Quick test commands
 
