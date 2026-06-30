@@ -46,10 +46,21 @@ STATION_TO_HUB: dict[str, dict] = {
     "落合":         {"tokyo_min": 27, "shinjuku_min": 10, "transfers_tokyo": 1},
     "西新宿五丁目": {"tokyo_min": 26, "shinjuku_min": 5,  "transfers_tokyo": 1},
 
+    # --- JR Chuo + Marunouchi terminus (west of 高円寺, already in table) ---
+    "荻窪":         {"tokyo_min": 27, "shinjuku_min": 12, "transfers_tokyo": 0},
+    "西荻窪":       {"tokyo_min": 29, "shinjuku_min": 14, "transfers_tokyo": 0},
+
     # --- Seibu Shinjuku: to Shinjuku direct-ish, Tokyo needs a transfer ---
+    # Times interpolated from neighbours on the same line (新井薬師前/下井草/都立家政,
+    # already in table). 駅  order from Seibu-Shinjuku: 新井薬師前–沼袋–野方–都立家政–
+    # 鷺ノ宮–下井草–井荻.
     "新井薬師前":   {"tokyo_min": 33, "shinjuku_min": 16, "transfers_tokyo": 1},
-    "下井草":       {"tokyo_min": 36, "shinjuku_min": 19, "transfers_tokyo": 1},
+    "沼袋":         {"tokyo_min": 34, "shinjuku_min": 17, "transfers_tokyo": 1},
+    "野方":         {"tokyo_min": 34, "shinjuku_min": 17, "transfers_tokyo": 1},
     "都立家政":     {"tokyo_min": 35, "shinjuku_min": 18, "transfers_tokyo": 1},
+    "鷺ノ宮":       {"tokyo_min": 35, "shinjuku_min": 18, "transfers_tokyo": 1},
+    "下井草":       {"tokyo_min": 36, "shinjuku_min": 19, "transfers_tokyo": 1},
+    "井荻":         {"tokyo_min": 37, "shinjuku_min": 20, "transfers_tokyo": 1},
 
     # --- Seibu Ikebukuro: via Ikebukuro, two hops to Tokyo ---
     "富士見台":     {"tokyo_min": 38, "shinjuku_min": 24, "transfers_tokyo": 2},
