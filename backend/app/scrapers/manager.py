@@ -57,27 +57,25 @@ def _empty_stats(url: str = "") -> dict:
     }
 
 
-def dedup_listings(per_source_results: dict[str, list[dict]]) -> tuple[list[dict], int]:
+def dedup_listings(per_source_results: dict[str, list[dict]]) -> list[dict]:
     """
     Merge per-source listings and remove duplicates. Pure / testable.
 
-    Three layers (see run_all_scrapers for the rationale):
+    Two layers:
       1) URL dedup — the literal same listing scraped twice.
       2) Exact-dupe dedup — same building + station + rent + size + floor. Catches
          the same physical unit re-listed under different URLs. Different floors
-         are KEPT (genuinely different units).
-      3) Cross-source fuzzy dedup — same station + rent + size + floor, ignoring
-         the building name. Collapses e-housing's ENGLISH-named re-aggregated
-         listings against the JP portals' Japanese-named ones. Guarded to fire
-         only when station + rent + size are all present. Different floors stay
-         separate. Returns the fuzzy-merge count for telemetry.
+         (or rent/size) are KEPT — genuinely different units.
 
-    Returns (unique_listings, cross_source_merged_count).
+    ponytail: dropped a 3rd "fuzzy" layer that keyed on station+rent+size+floor
+    WITHOUT building name. Live data (Jun 30) showed it merged 0 of its intended
+    targets (e-housing's station/rent never match the JP portals — 中野 vs 中野駅,
+    discounted yen) and falsely collapsed 43 distinct units that shared those four
+    fields. Building name is load-bearing; cross-language dedup needs coordinates,
+    add it back keyed on lat/long if a real duplicate problem shows up.
     """
     seen_urls: set[str] = set()
     seen_exact: set[tuple] = set()
-    seen_fuzzy: dict[tuple, str] = {}
-    fuzzy_merged = 0
     unique: list[dict] = []
 
     for source, listings in per_source_results.items():
@@ -88,17 +86,13 @@ def dedup_listings(per_source_results: dict[str, list[dict]]) -> tuple[list[dict
                     continue
                 seen_urls.add(url)
 
-            station = (listing.get("nearest_station") or "").strip()
-            rent = listing.get("rent")
-            size = listing.get("size_m2")
             floor_key = (listing.get("floor") if listing.get("floor") is not None
                          else listing.get("floor_plan"))
-
             exact = (
                 (listing.get("building_name") or "").strip(),
-                station,
-                rent,
-                size,
+                (listing.get("nearest_station") or "").strip(),
+                listing.get("rent"),
+                listing.get("size_m2"),
                 floor_key,
             )
             if not url and exact == ("", "", None, None, None):
@@ -106,25 +100,10 @@ def dedup_listings(per_source_results: dict[str, list[dict]]) -> tuple[list[dict
             if exact in seen_exact:
                 continue
 
-            fuzzy = None
-            if station and rent is not None and size is not None:
-                fuzzy = (station, rent, round(float(size), 1), floor_key)
-                if fuzzy in seen_fuzzy:
-                    fuzzy_merged += 1
-                    logger.info(
-                        "[dedup] cross-source merge: %s (%s) ≈ existing %s — "
-                        "station=%s rent=%s size=%s floor=%s",
-                        listing.get("building_name"), source, seen_fuzzy[fuzzy],
-                        station, rent, size, floor_key,
-                    )
-                    continue
-
             seen_exact.add(exact)
-            if fuzzy is not None:
-                seen_fuzzy[fuzzy] = source
             unique.append(listing)
 
-    return unique, fuzzy_merged
+    return unique
 
 
 async def _run_single_scraper(
@@ -196,7 +175,7 @@ async def run_all_scrapers(
     for source, listings in per_source_results.items():
         per_source_stats[source]["raw_count"] = len(listings)
 
-    unique, fuzzy_merged = dedup_listings(per_source_results)
+    unique = dedup_listings(per_source_results)
 
     # Build post-scrape filter thresholds
     rent_max_yen = int(criteria.rent_max * 10000) if criteria.rent_max < 9999 else None
@@ -306,7 +285,6 @@ async def run_all_scrapers(
         "total_passed": len(filtered),
         "dominant_filter": dominant,
         "moto_filtered_out": moto_filtered_out,
-        "cross_source_merged": fuzzy_merged,
     }
 
     logger.info(
