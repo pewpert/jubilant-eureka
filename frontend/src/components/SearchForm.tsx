@@ -58,6 +58,8 @@ export default function SearchForm({ onSubmit, loading }: Props) {
   const [floorPlans, setFloorPlans] = useState<string[]>([]);
   const [walkMinutes, setWalkMinutes] = useState(9999);
   const [buildingAge, setBuildingAge] = useState(9999);
+  const [commuteTokyo, setCommuteTokyo] = useState(9999);
+  const [commuteShinjuku, setCommuteShinjuku] = useState(9999);
   const [sources, setSources] = useState(["suumo", "homes", "chintai", "ehousing"]);
   const [maxPages, setMaxPages] = useState(2);
   const [motoOnly, setMotoOnly] = useState(false);
@@ -107,6 +109,8 @@ export default function SearchForm({ onSubmit, loading }: Props) {
       floor_plans: floorPlans,
       walk_minutes: walkMinutes,
       building_age_max: buildingAge,
+      commute_tokyo_max: commuteTokyo,
+      commute_shinjuku_max: commuteShinjuku,
       sources,
       max_pages: maxPages,
       enrich_details: true,
@@ -307,6 +311,38 @@ export default function SearchForm({ onSubmit, loading }: Props) {
               <option value={20}>≤ 20 yrs</option>
               <option value={30}>≤ 30 yrs</option>
               <option value={40}>≤ 40 yrs</option>
+            </select>
+          </div>
+          <div>
+            <label className="flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+              <Train size={12} className="text-rose-500" /> → Tokyo Stn
+            </label>
+            <select
+              value={commuteTokyo}
+              onChange={(e) => setCommuteTokyo(Number(e.target.value))}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+            >
+              <option value={9999}>Any</option>
+              <option value={30}>≤ 30 min</option>
+              <option value={40}>≤ 40 min</option>
+              <option value={50}>≤ 50 min</option>
+              <option value={60}>≤ 60 min</option>
+            </select>
+          </div>
+          <div>
+            <label className="flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
+              <Train size={12} className="text-rose-500" /> → Shinjuku
+            </label>
+            <select
+              value={commuteShinjuku}
+              onChange={(e) => setCommuteShinjuku(Number(e.target.value))}
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-rose-500"
+            >
+              <option value={9999}>Any</option>
+              <option value={20}>≤ 20 min</option>
+              <option value={30}>≤ 30 min</option>
+              <option value={40}>≤ 40 min</option>
+              <option value={50}>≤ 50 min</option>
             </select>
           </div>
         </div>

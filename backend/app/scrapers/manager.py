@@ -268,6 +268,26 @@ async def run_all_scrapers(
             l["commute_shinjuku_min"] = est["shinjuku_total"]
             l["commute_score"] = est["score"]
 
+    # Commute filters — applied AFTER the estimate is attached (it doesn't exist
+    # before this point). A listing whose station isn't in the table has a None
+    # estimate and is KEPT (can't compute ≠ fails), matching the walk/age filters.
+    commute_tokyo_max = criteria.commute_tokyo_max if criteria.commute_tokyo_max < 9999 else None
+    commute_shinjuku_max = criteria.commute_shinjuku_max if criteria.commute_shinjuku_max < 9999 else None
+    commute_filtered_out = 0
+    if commute_tokyo_max or commute_shinjuku_max:
+        def _within(l: dict) -> bool:
+            t, s = l.get("commute_tokyo_min"), l.get("commute_shinjuku_min")
+            if commute_tokyo_max and t is not None and t > commute_tokyo_max:
+                return False
+            if commute_shinjuku_max and s is not None and s > commute_shinjuku_max:
+                return False
+            return True
+        before = len(filtered)
+        filtered = [l for l in filtered if _within(l)]
+        commute_filtered_out = before - len(filtered)
+        logger.info("[commute-filter] kept %d (dropped %d over the commute limit)",
+                    len(filtered), commute_filtered_out)
+
     # Opt-in moto-parking filter — applied AFTER enrichment, since parking data
     # only exists once detail pages are fetched. Keeps only CONFIRMED parking;
     # never hides anything unless the user explicitly enabled it.
@@ -285,6 +305,7 @@ async def run_all_scrapers(
         "total_passed": len(filtered),
         "dominant_filter": dominant,
         "moto_filtered_out": moto_filtered_out,
+        "commute_filtered_out": commute_filtered_out,
     }
 
     logger.info(

@@ -10,6 +10,8 @@ export interface SearchCriteria {
   floor_plans: string[];
   walk_minutes: number;
   building_age_max: number;
+  commute_tokyo_max?: number;
+  commute_shinjuku_max?: number;
   sources: string[];
   max_pages: number;
   enrich_details?: boolean;

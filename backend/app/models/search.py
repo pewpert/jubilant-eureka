@@ -97,6 +97,14 @@ class SearchCriteria(BaseModel):
     # Building
     building_age_max: int = Field(9999, ge=0, description="Max building age in years")
 
+    # Commute filters (optional). Max door-to-door minutes (scraped walk + offline
+    # station→hub train time) to each hub. 9999 = no limit. Listings whose nearest
+    # station isn't in the commute table (estimate = None) are KEPT, not dropped —
+    # a missing estimate means "couldn't compute", not "fails", matching the
+    # walk/age filters' treatment of unknown values.
+    commute_tokyo_max: int = Field(9999, ge=0, description="Max minutes to Tokyo Station")
+    commute_shinjuku_max: int = Field(9999, ge=0, description="Max minutes to Shinjuku")
+
     # Sources to scrape
     sources: list[Source] = Field(
         default=[Source.SUUMO, Source.HOMES, Source.CHINTAI],
