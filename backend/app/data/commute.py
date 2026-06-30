@@ -35,6 +35,7 @@ STATION_TO_HUB: dict[str, dict] = {
     "中野新橋":     {"tokyo_min": 28, "shinjuku_min": 12, "transfers_tokyo": 1},
     "中野富士見町": {"tokyo_min": 29, "shinjuku_min": 13, "transfers_tokyo": 1},
     "方南町":       {"tokyo_min": 31, "shinjuku_min": 15, "transfers_tokyo": 1},
+    "南阿佐ケ谷":   {"tokyo_min": 28, "shinjuku_min": 13, "transfers_tokyo": 0},
 
     # --- JR Chuo/Sobu: fast to Shinjuku, one transfer (Ochanomizu/Kanda) to Tokyo ---
     "高円寺":       {"tokyo_min": 22, "shinjuku_min": 9,  "transfers_tokyo": 0},
@@ -61,14 +62,25 @@ STATION_TO_HUB: dict[str, dict] = {
     "鷺ノ宮":       {"tokyo_min": 35, "shinjuku_min": 18, "transfers_tokyo": 1},
     "下井草":       {"tokyo_min": 36, "shinjuku_min": 19, "transfers_tokyo": 1},
     "井荻":         {"tokyo_min": 37, "shinjuku_min": 20, "transfers_tokyo": 1},
+    "上井草":       {"tokyo_min": 38, "shinjuku_min": 21, "transfers_tokyo": 1},
 
     # --- Seibu Ikebukuro: via Ikebukuro, two hops to Tokyo ---
     "富士見台":     {"tokyo_min": 38, "shinjuku_min": 24, "transfers_tokyo": 2},
 
-    # --- Keio / Keio Inokashira: Shibuya/Shinjuku oriented, Tokyo is awkward ---
+    # --- Keio line: Shinjuku-direct (Keio terminates at Shinjuku); Tokyo via transfer.
+    #     Order toward Shinjuku: 八幡山–下高井戸–桜上水–明大前–代田橋–笹塚–(Shinjuku).
+    "八幡山":       {"tokyo_min": 36, "shinjuku_min": 16, "transfers_tokyo": 1},
+    "下高井戸":     {"tokyo_min": 35, "shinjuku_min": 15, "transfers_tokyo": 1},
     "桜上水":       {"tokyo_min": 37, "shinjuku_min": 17, "transfers_tokyo": 1},
-    "富士見ヶ丘":   {"tokyo_min": 40, "shinjuku_min": 22, "transfers_tokyo": 2},
+    "明大前":       {"tokyo_min": 33, "shinjuku_min": 13, "transfers_tokyo": 1},
+    "代田橋":       {"tokyo_min": 32, "shinjuku_min": 12, "transfers_tokyo": 1},
+    "笹塚":         {"tokyo_min": 31, "shinjuku_min": 11, "transfers_tokyo": 1},
+
+    # --- Keio Inokashira: Shibuya-oriented; Shinjuku/Tokyo both need a transfer ---
+    "富士見ケ丘":   {"tokyo_min": 40, "shinjuku_min": 22, "transfers_tokyo": 2},
     "高井戸":       {"tokyo_min": 39, "shinjuku_min": 21, "transfers_tokyo": 2},
+    "永福町":       {"tokyo_min": 38, "shinjuku_min": 20, "transfers_tokyo": 2},
+    "西永福":       {"tokyo_min": 39, "shinjuku_min": 21, "transfers_tokyo": 2},
 }
 
 # Tokyo Station is weighted heavier than Shinjuku in the ranking score, per
@@ -80,16 +92,17 @@ TRANSFER_PENALTY_MIN = 4.0
 
 
 def station_normalize(station: str | None) -> str:
-    """Strip the 駅 suffix and whitespace so 新高円寺駅 and 新高円寺 both match."""
+    """Strip 駅 suffix/whitespace and fold the ケ/ヶ variant so 新高円寺駅 → 新高円寺
+    and 阿佐ヶ谷 / 阿佐ケ谷 collapse to one key. Scrapers emit both ケ forms; table
+    keys use ケ."""
     if not station:
         return ""
     s = station.strip()
-    # Take the first station if several are concatenated, then drop 駅 onwards.
     s = s.split()[0] if s.split() else s
     idx = s.find("駅")
     if idx != -1:
         s = s[:idx]
-    return s.strip()
+    return s.strip().replace("ヶ", "ケ")
 
 
 def estimate_commute(station: str | None, walk_minutes: int | None) -> dict | None:
