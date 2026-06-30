@@ -30,19 +30,6 @@ def _block_key(source: str) -> str:
     return f"blocked:{source}"
 
 
-async def is_recently_blocked(source: str) -> bool:
-    """Check if we've seen `source` return a block page within the memory window."""
-    settings = get_settings()
-    client = redis_async.from_url(settings.redis_url, decode_responses=True)
-    try:
-        return bool(await client.get(_block_key(source)))
-    except Exception as exc:
-        logger.warning("[block-memory] read failed: %s", exc)
-        return False
-    finally:
-        await client.aclose()
-
-
 async def mark_blocked(source: str) -> None:
     """Remember that `source` is currently rate-limiting us."""
     settings = get_settings()

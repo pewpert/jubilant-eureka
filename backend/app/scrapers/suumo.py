@@ -122,11 +122,6 @@ class SuumoScraper(BaseScraper):
         so it works whether the HTML came from the live page or Firecrawl.
         """
         import asyncio as _asyncio
-        from app.scrapers.firecrawl import is_recently_blocked
-
-        # Telemetry only — no longer changes control flow.
-        if await is_recently_blocked(self.source_name):
-            logger.info("[suumo] Note: Suumo recently served a block page; trying live first anyway")
 
         context = await self._new_context()
         page = await self._new_page(context)
