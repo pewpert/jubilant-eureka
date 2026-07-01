@@ -43,7 +43,7 @@ from bs4 import BeautifulSoup
 from app.scrapers.base import BaseScraper
 from app.scrapers.transport import parse_transport
 from app.scrapers.detail_features import parse_detail_features
-from app.scrapers.normalize import parse_yen as _parse_yen, parse_size as _parse_size, parse_walk as _parse_walk
+from app.scrapers.normalize import parse_yen as _parse_yen, parse_size as _parse_size, parse_walk as _parse_walk, common_search_params
 from app.scrapers.contract import RawListing
 from app.models.search import SearchCriteria, FloorPlan
 
@@ -92,6 +92,18 @@ KNOWN_STATION_CODES: dict[str, str] = {
 class HomesScraper(BaseScraper):
     source_name = "homes"
 
+    _PARAM_NAMES = {
+        "rent_min": "cb", "rent_max": "ct",
+        "size_min": "mb", "size_max": "mt", "walk": "et", "page": "page",
+    }
+
+    def _url_for_path(self, path: str, page_num: int) -> str:
+        """Assemble a Homes search URL for a geo path + the shared param ladder."""
+        params = common_search_params(self.criteria, self._PARAM_NAMES, page_num)
+        qs = "&".join(f"{k}={v}" for k, v in params)
+        base = f"{HOMES_BASE}{path}"
+        return f"{base}?{qs}" if qs else base
+
     def _build_url_for_ward(self, ward_slug: str | None, page_num: int) -> str:
         """Build search URL for a specific ward (or all-Tokyo if None)."""
         c = self.criteria
@@ -102,24 +114,7 @@ class HomesScraper(BaseScraper):
             path = f"/theme/{HOMES_THEME_1LDK}/tokyo/{geo}/list/" if use_theme else f"/tokyo/{geo}/list/"
         else:
             path = "/tokyo/list/"
-
-        params: list[tuple[str, str]] = []
-        if c.rent_min > 0:
-            params.append(("cb", str(c.rent_min)))
-        if c.rent_max < 9999:
-            params.append(("ct", str(c.rent_max)))
-        if c.size_min_m2 > 0:
-            params.append(("mb", str(int(c.size_min_m2))))
-        if c.size_max_m2 < 9999:
-            params.append(("mt", str(int(c.size_max_m2))))
-        if c.walk_minutes.value < 9999:
-            params.append(("et", str(c.walk_minutes.value)))
-        if page_num > 1:
-            params.append(("page", str(page_num)))
-
-        qs = "&".join(f"{k}={v}" for k, v in params)
-        base = f"{HOMES_BASE}{path}"
-        return f"{base}?{qs}" if qs else base
+        return self._url_for_path(path, page_num)
 
     def is_blocked(self, html: str | None) -> bool:
         """A real Homes results page carries the merge-building card marker."""
@@ -177,22 +172,7 @@ class HomesScraper(BaseScraper):
                     use_theme = FloorPlan.LDK1 in c.floor_plans or FloorPlan.DK1 in c.floor_plans
                     geo = f"{code}-st"
                     path = f"/theme/{HOMES_THEME_1LDK}/tokyo/{geo}/list/" if use_theme else f"/tokyo/{geo}/list/"
-                    params: list[tuple[str, str]] = []
-                    if c.rent_min > 0:
-                        params.append(("cb", str(c.rent_min)))
-                    if c.rent_max < 9999:
-                        params.append(("ct", str(c.rent_max)))
-                    if c.size_min_m2 > 0:
-                        params.append(("mb", str(int(c.size_min_m2))))
-                    if c.size_max_m2 < 9999:
-                        params.append(("mt", str(int(c.size_max_m2))))
-                    if c.walk_minutes.value < 9999:
-                        params.append(("et", str(c.walk_minutes.value)))
-                    if page_num > 1:
-                        params.append(("page", str(page_num)))
-                    qs = "&".join(f"{k}={v}" for k, v in params)
-                    base = f"{HOMES_BASE}{path}"
-                    return f"{base}?{qs}" if qs else base
+                    return self._url_for_path(path, page_num)
         return self._build_url_for_ward(ward_slug, page_num)
 
     def parse_html(self, html: str) -> list[dict]:

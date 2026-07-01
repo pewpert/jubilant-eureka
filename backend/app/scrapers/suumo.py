@@ -48,6 +48,7 @@ from app.scrapers.normalize import (
     parse_walk as _parse_walk,
     parse_floor as _parse_floor,
     parse_building_age as _parse_building_age,
+    common_search_params,
 )
 from app.scrapers.contract import RawListing
 from app.models.search import SearchCriteria, FloorPlan, WalkMinutes
@@ -68,6 +69,12 @@ FLOOR_PLAN_CODES = {
     FloorPlan.DK3: "09",
     FloorPlan.LDK3: "10",
     FloorPlan.LDK4_PLUS: "11",
+}
+
+# rent in 万円 (not yen). 'page' appended last, after age/floor_plan, to keep URL order.
+_PARAM_NAMES = {
+    "rent_min": "cb", "rent_max": "ct",
+    "size_min": "mb", "size_max": "mt", "walk": "et",
 }
 
 
@@ -171,24 +178,12 @@ class SuumoScraper(BaseScraper):
         for code in c.ward_codes():
             params.append(("sc", code))
 
-        if c.rent_min > 0:
-            params.append(("cb", str(c.rent_min)))
-        if c.rent_max < 9999:
-            params.append(("ct", str(c.rent_max)))
-        if c.size_min_m2 > 0:
-            params.append(("mb", str(int(c.size_min_m2))))
-        if c.size_max_m2 < 9999:
-            params.append(("mt", str(int(c.size_max_m2))))
-        if c.walk_minutes.value < 9999:
-            params.append(("et", str(c.walk_minutes.value)))
+        params += common_search_params(c, _PARAM_NAMES)  # rent/size/walk
         if c.building_age_max < 9999:
             params.append(("cn", str(c.building_age_max)))
-
         # Room types
-        if c.floor_plans:
-            for fp in c.floor_plans:
-                params.append(("md", FLOOR_PLAN_CODES[fp]))
-
+        for fp in c.floor_plans:
+            params.append(("md", FLOOR_PLAN_CODES[fp]))
         if page_num > 1:
             params.append(("page", str(page_num)))
 

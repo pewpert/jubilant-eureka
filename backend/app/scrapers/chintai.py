@@ -29,7 +29,7 @@ from bs4 import BeautifulSoup
 from app.scrapers.base import BaseScraper
 from app.scrapers.transport import parse_transport
 from app.scrapers.detail_features import parse_detail_features
-from app.scrapers.normalize import parse_yen as _parse_yen, parse_size as _parse_size
+from app.scrapers.normalize import parse_yen as _parse_yen, parse_size as _parse_size, common_search_params
 from app.scrapers.contract import RawListing
 from app.models.search import SearchCriteria, FloorPlan
 
@@ -52,18 +52,14 @@ FLOOR_PLAN_VALUES = {
 }
 
 
+_PARAM_NAMES = {
+    "rent_min": "yen_from", "rent_max": "yen_to",
+    "size_min": "menseki_from", "size_max": "menseki_to", "walk": "tsukin",
+}  # page appended last, after age/floor_plan, to preserve URL order.
+
+
 def _build_params(c: SearchCriteria, page_num: int) -> list[tuple[str, str]]:
-    params: list[tuple[str, str]] = []
-    if c.rent_min > 0:
-        params.append(("yen_from", str(int(c.rent_min * 10000))))
-    if c.rent_max < 9999:
-        params.append(("yen_to", str(int(c.rent_max * 10000))))
-    if c.size_min_m2 > 0:
-        params.append(("menseki_from", str(int(c.size_min_m2))))
-    if c.size_max_m2 < 9999:
-        params.append(("menseki_to", str(int(c.size_max_m2))))
-    if c.walk_minutes.value < 9999:
-        params.append(("tsukin", str(c.walk_minutes.value)))
+    params = common_search_params(c, _PARAM_NAMES, rent_in_yen=True)
     if c.building_age_max < 9999:
         params.append(("chikunensu", str(c.building_age_max)))
     for fp in c.floor_plans:

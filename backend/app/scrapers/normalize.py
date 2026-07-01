@@ -14,6 +14,10 @@ rather than raising, because scraper input is untrusted HTML.
 
 import re
 from datetime import date
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.models.search import SearchCriteria
 
 
 def parse_yen(text: str | None) -> int | None:
@@ -77,3 +81,37 @@ def parse_building_age(text: str | None) -> tuple[int | None, int | None]:
     if m:
         return int(m.group(1)), None
     return None, None
+
+
+def common_search_params(
+    c: "SearchCriteria",
+    names: dict[str, str],
+    page_num: int = 1,
+    rent_in_yen: bool = False,
+) -> list[tuple[str, str]]:
+    """
+    Build the rent/size/walk/page query params shared by every portal's search URL.
+
+    The 4 scrapers differ only in param NAMES and whether rent is in yen or 万円,
+    so this takes a name-map and emits the present params; each scraper appends its
+    own site-specific params (wards, floor_plans, building_age) inline.
+
+    names keys (omit a key to skip that param for a site):
+      rent_min, rent_max, size_min, size_max, walk, page
+    rent_in_yen: True → rent ×10000 (chintai/ehousing), False → 万円 as-is (suumo/homes).
+    """
+    p: list[tuple[str, str]] = []
+    rent_mul = 10000 if rent_in_yen else 1
+
+    def add(key: str, present: bool, value):
+        name = names.get(key)
+        if name and present:
+            p.append((name, str(value)))
+
+    add("rent_min", c.rent_min > 0, int(c.rent_min * rent_mul) if rent_in_yen else c.rent_min)
+    add("rent_max", c.rent_max < 9999, int(c.rent_max * rent_mul) if rent_in_yen else c.rent_max)
+    add("size_min", c.size_min_m2 > 0, int(c.size_min_m2))
+    add("size_max", c.size_max_m2 < 9999, int(c.size_max_m2))
+    add("walk", c.walk_minutes.value < 9999, c.walk_minutes.value)
+    add("page", page_num > 1, page_num)
+    return p

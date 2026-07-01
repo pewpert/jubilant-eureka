@@ -43,6 +43,7 @@ from playwright.async_api import Page
 
 from app.scrapers.base import BaseScraper
 from app.scrapers.contract import RawListing
+from app.scrapers.normalize import common_search_params
 from app.models.search import SearchCriteria, FloorPlan
 
 logger = logging.getLogger(__name__)
@@ -210,27 +211,18 @@ class EhousingScraper(BaseScraper):
             ids.append(wid)
         return ids
 
+    # Rent is in YEN on e-housing (criteria is 万円). 'page' added last after layout.
+    _PARAM_NAMES = {
+        "rent_min": "price_from", "rent_max": "price_to",
+        "size_min": "area_from", "size_max": "area_to", "walk": "walking_distance_to",
+    }
+
     def build_search_url(self, page_num: int = 1) -> str:
         c = self.criteria
-        params: list[tuple[str, str]] = []
-
-        for wid in self._ward_ids():
-            params.append(("wards", str(wid)))
-
-        # Rent is in YEN on e-housing (our criteria is in 万円).
-        if c.rent_min > 0:
-            params.append(("price_from", str(int(c.rent_min * 10000))))
-        if c.rent_max < 9999:
-            params.append(("price_to", str(int(c.rent_max * 10000))))
-        if c.size_min_m2 > 0:
-            params.append(("area_from", str(int(c.size_min_m2))))
-        if c.size_max_m2 < 9999:
-            params.append(("area_to", str(int(c.size_max_m2))))
-        if c.walk_minutes.value < 9999:
-            params.append(("walking_distance_to", str(c.walk_minutes.value)))
+        params: list[tuple[str, str]] = [("wards", str(wid)) for wid in self._ward_ids()]
+        params += common_search_params(c, self._PARAM_NAMES, rent_in_yen=True)
         if c.floor_plans:
-            layouts = ",".join(FLOOR_PLAN_LAYOUTS[fp] for fp in c.floor_plans)
-            params.append(("layout", layouts))
+            params.append(("layout", ",".join(FLOOR_PLAN_LAYOUTS[fp] for fp in c.floor_plans)))
         if page_num > 1:
             params.append(("page", str(page_num)))
 
